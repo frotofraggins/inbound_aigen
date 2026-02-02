@@ -293,6 +293,16 @@ class AlpacaPaperBroker:
             # Get account info for position sizing
             account = self.get_account()
             buying_power = float(account['buying_power'])
+
+            # Paper trading override: ignore actual buying power if configured
+            if self.config.get('paper_ignore_buying_power'):
+                override = self.config.get('paper_buying_power_override')
+                if override is not None:
+                    buying_power = float(override)
+                    print(f"Paper override buying power: ${buying_power:.2f}")
+                else:
+                    buying_power = 1_000_000_000.0
+                    print("Paper override buying power: unlimited (1e9)")
             
             # Get option chain and select optimal contract using REAL API
             option_type = 'call' if instrument_type == 'CALL' else 'put'

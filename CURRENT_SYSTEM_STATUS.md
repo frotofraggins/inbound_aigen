@@ -9,6 +9,10 @@ Deployed:
 
 Also raised `max_trades_per_ticker_per_day` to **10** in `/ops-pipeline/dispatcher_config` to avoid frequent gate skips.
 
+**Update (Feb 2, 2026 ~1:30 PM ET):** Paper trading no longer limited by account cash.  
+Dispatcher now supports `paper_ignore_buying_power` + `paper_buying_power_override` and `max_notional_exposure` to use an authorized paper budget instead of real cash.  
+Current config: `paper_ignore_buying_power=true`, `paper_buying_power_override=1,000,000`, `max_notional_exposure=1,000,000`.
+
 **Prior Update (Feb 2, 2026 ~1:10 PM ET):** Options trades were falling back to simulation due to a missing module import in the dispatcher (`No module named 'position_manager'`).  
 Fixed by making Kelly stats optional in `services/dispatcher/alpaca/broker.py`, and redeployed:
 - `dispatcher-service` → task definition `ops-pipeline-dispatcher:24` (image digest `sha256:0c02b213...`)
@@ -20,7 +24,7 @@ Dispatchers were running and generating signals, but recent recommendations were
 
 **Last real trades:** Jan 29, 2026 ~11:17–11:36 AM ET (ALPACA_PAPER).
 
-**Last Updated:** Feb 2, 2026 6:20 PM UTC (1:20 PM ET)  
+**Last Updated:** Feb 2, 2026 6:30 PM UTC (1:30 PM ET)  
 **System:** Fully operational (Phases 1-17 complete)  
 **Trading:** Options API fixed, Phase 17 learning deployed  
 **Latest:** Shorting enabled, trade-stream WebSocket fixed and running

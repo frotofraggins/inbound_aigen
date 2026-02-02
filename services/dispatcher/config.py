@@ -15,7 +15,7 @@ ACCOUNT_TIERS = {
         'risk_pct_day': 0.15,      # 15% - balanced for small accounts
         'risk_pct_swing': 0.08,    # 8%
         'max_contracts': 1,
-        'min_confidence': 0.60,    # Slightly lower bar for more trades
+        'min_confidence': 0.45,    # Align with swing threshold to allow tiny to trade
         'min_volume_ratio': 2.0     # Volume surge required
     },
     'small': {
@@ -78,7 +78,7 @@ def load_config() -> Dict[str, Any]:
     
     # MULTI-ACCOUNT: Load account-specific Alpaca credentials
     account_tier = os.environ.get('ACCOUNT_TIER', 'large')  # tiny/small/medium/large
-    tier_config = ACCOUNT_TIERS.get(account_tier, ACCOUNT_TIERS['large'])
+    tier_config = dict(ACCOUNT_TIERS.get(account_tier, ACCOUNT_TIERS['large']))
     
     try:
         # Try to load tier-specific credentials
@@ -102,6 +102,22 @@ def load_config() -> Dict[str, Any]:
     except:
         # Use sensible defaults
         dispatcher_config = {}
+
+    # Paper trading sizing overrides (optional)
+    paper_ignore_buying_power = dispatcher_config.get('paper_ignore_buying_power', False)
+    paper_buying_power_override = dispatcher_config.get('paper_buying_power_override')
+    paper_risk_pct_day = dispatcher_config.get('paper_risk_pct_day')
+    paper_risk_pct_swing = dispatcher_config.get('paper_risk_pct_swing')
+    paper_max_contracts = dispatcher_config.get('paper_max_contracts')
+
+    if paper_ignore_buying_power:
+        # Override tier risk limits for paper training if provided
+        if paper_risk_pct_day is not None:
+            tier_config['risk_pct_day'] = paper_risk_pct_day
+        if paper_risk_pct_swing is not None:
+            tier_config['risk_pct_swing'] = paper_risk_pct_swing
+        if paper_max_contracts is not None:
+            tier_config['max_contracts'] = paper_max_contracts
     
     return {
         # Database connection
@@ -118,6 +134,8 @@ def load_config() -> Dict[str, Any]:
         'account_name': alpaca_creds.get('account_name', 'unknown'),
         'account_tier': account_tier,
         'account_tier_config': tier_config,
+        'paper_ignore_buying_power': paper_ignore_buying_power,
+        'paper_buying_power_override': paper_buying_power_override,
         
         # Global risk gates (config-driven)
         'max_signals_per_run': dispatcher_config.get('max_signals_per_run', 10),
@@ -125,6 +143,9 @@ def load_config() -> Dict[str, Any]:
         'confidence_min': dispatcher_config.get('confidence_min', 0.70),
         'lookback_window_minutes': dispatcher_config.get('lookback_window_minutes', 60),
         'processing_ttl_minutes': dispatcher_config.get('processing_ttl_minutes', 10),
+        'max_open_positions': dispatcher_config.get('max_open_positions', 5),
+        'max_notional_exposure': dispatcher_config.get('max_notional_exposure', 10000),
+        'max_daily_loss': dispatcher_config.get('max_daily_loss', 500),
         
         # Data freshness gates
         'max_bar_age_seconds': dispatcher_config.get('max_bar_age_seconds', 120),

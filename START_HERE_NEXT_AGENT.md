@@ -18,6 +18,7 @@
 - ✅ Options execution fallback fixed (missing `position_manager` import); dispatcher-service rev 24 + dispatcher-tiny-service rev 8 deployed (image digest `sha256:0c02b213...`)
 - ✅ Real trades now marked **EXECUTED** for ALPACA_PAPER (dispatcher-service rev 25 + dispatcher-tiny-service rev 9, digest `sha256:c13b00fc...`)
 - ✅ Raised `max_trades_per_ticker_per_day` to 10 in `/ops-pipeline/dispatcher_config` to reduce gate skips
+- ✅ Paper training override added: can ignore buying power and use authorized paper budget (`paper_ignore_buying_power`, `paper_buying_power_override`, `max_notional_exposure`)
 - ⚠️ **Current blocker:** Trading-hours gate (outside 9:30–16:00 ET)
 
 ---
