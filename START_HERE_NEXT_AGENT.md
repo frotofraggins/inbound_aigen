@@ -15,6 +15,7 @@
 - ✅ Both account dispatchers deployed (shorting enabled)
 - ✅ Trade-stream WebSocket running (no-cache rebuild + secrets/db fix)
 - ✅ DB hygiene: removed 8,379 feature rows with NULL volume_ratio, created view `lane_features_clean`, fixed NULL transaction_time in account_activities (execs still pending fills: 85 rows)
+- ✅ Options execution fallback fixed (missing `position_manager` import); dispatcher-service rev 24 + dispatcher-tiny-service rev 8 deployed (image digest `sha256:0c02b213...`)
 - ⚠️ **Current blocker:** Trading-hours gate (outside 9:30–16:00 ET)
 
 ---

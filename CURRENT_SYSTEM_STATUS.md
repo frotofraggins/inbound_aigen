@@ -1,11 +1,17 @@
 # Current System Status - January 30, 2026
 
-**Update (Jan 30, 2026 ~5:06 PM ET):** Trades are not firing after market close due to the `trading_hours` gate.  
-Dispatchers are running and generating signals, but recent recommendations are **SKIPPED** with `trading_hours` (and sometimes `confidence` for tiny tier).
+**Update (Feb 2, 2026 ~1:10 PM ET):** Options trades were falling back to simulation due to a missing module import in the dispatcher (`No module named 'position_manager'`).  
+Fixed by making Kelly stats optional in `services/dispatcher/alpaca/broker.py`, and redeployed:
+- `dispatcher-service` → task definition `ops-pipeline-dispatcher:24` (image digest `sha256:0c02b213...`)
+- `dispatcher-tiny-service` → task definition `ops-pipeline-dispatcher-tiny-service:8` (same image digest)
+Expect real options orders on the next qualifying signals (no more SIMULATED_FALLBACK).
+
+**Prior Update (Jan 30, 2026 ~5:06 PM ET):** Trades were not firing after market close due to the `trading_hours` gate.  
+Dispatchers were running and generating signals, but recent recommendations were **SKIPPED** with `trading_hours` (and sometimes `confidence` for tiny tier).
 
 **Last real trades:** Jan 29, 2026 ~11:17–11:36 AM ET (ALPACA_PAPER).
 
-**Last Updated:** Jan 30, 2026 10:06 PM UTC (5:06 PM ET)  
+**Last Updated:** Feb 2, 2026 6:10 PM UTC (1:10 PM ET)  
 **System:** Fully operational (Phases 1-17 complete)  
 **Trading:** Options API fixed, Phase 17 learning deployed  
 **Latest:** Shorting enabled, trade-stream WebSocket fixed and running

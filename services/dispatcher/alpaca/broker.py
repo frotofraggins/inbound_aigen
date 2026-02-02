@@ -320,11 +320,11 @@ class AlpacaPaperBroker:
 
             # PHASE 3-4: Validate IV Rank before trading
             from alpaca.options import validate_iv_rank
-            from feature_computer_1m.db import FeatureDB
-            
-            feature_db = FeatureDB(self.config)
-            iv_passed, iv_reason = validate_iv_rank(best_contract, ticker, feature_db)
-            feature_db.close()
+            from db.iv_history import IVHistoryDB
+
+            iv_db = IVHistoryDB(self.config)
+            iv_passed, iv_reason = validate_iv_rank(best_contract, ticker, iv_db)
+            iv_db.close()
             
             if not iv_passed:
                 return self._simulate_execution(
@@ -350,12 +350,16 @@ class AlpacaPaperBroker:
                 )
 
             # PHASE 4: Calculate position size with Kelly Criterion (if enough history)
-            from position_manager.db import get_historical_trade_stats
             from alpaca.options import calculate_kelly_criterion_size
-            
-            # Get historical stats for Kelly
-            account_tier = self.config.get('account_tier', 'unknown')
-            stats = get_historical_trade_stats(account_tier, days=30)
+
+            # Get historical stats for Kelly (optional; skip if module unavailable in this container)
+            stats = {"total_trades": 0, "win_rate": 0.0, "avg_win": 0.0, "avg_loss": 0.0}
+            try:
+                from position_manager.db import get_historical_trade_stats
+                account_tier = self.config.get('account_tier', 'unknown')
+                stats = get_historical_trade_stats(account_tier, days=30) or stats
+            except Exception as e:
+                print(f"Kelly stats unavailable, skipping Kelly sizing: {e}")
             
             # Use Kelly if we have enough trade history
             if stats['total_trades'] >= 20:
