@@ -188,6 +188,23 @@ def mark_simulated(
         """, (json.dumps(gate_json), recommendation_id, run_id))
         conn.commit()
 
+def mark_executed(
+    conn,
+    recommendation_id: str,
+    run_id: str,
+    gate_json: Dict[str, Any]
+):
+    """Mark recommendation as EXECUTED successfully."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE dispatch_recommendations
+            SET status = 'EXECUTED',
+                risk_gate_json = %s::jsonb
+            WHERE id = %s
+              AND dispatcher_run_id = %s
+        """, (json.dumps(gate_json), recommendation_id, run_id))
+        conn.commit()
+
 def mark_failed(
     conn,
     recommendation_id: str,
@@ -461,7 +478,7 @@ def get_latest_features(conn, ticker: str, max_age_seconds: int) -> Optional[Dic
                 vol_ratio,
                 trend_state,
                 computed_at
-            FROM lane_features
+            FROM lane_features_clean
             WHERE ticker = %s
               AND computed_at >= %s
             ORDER BY computed_at DESC

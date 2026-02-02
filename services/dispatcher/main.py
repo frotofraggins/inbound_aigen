@@ -6,7 +6,7 @@ Implements proven patterns:
 1. Claim-then-act with FOR UPDATE SKIP LOCKED
 2. Idempotency enforced by database UNIQUE constraint
 3. Immutable execution ledger + separate mutable status
-4. Explicit finite state machine (PENDING → PROCESSING → SIMULATED/SKIPPED/FAILED)
+4. Explicit finite state machine (PENDING → PROCESSING → EXECUTED/SIMULATED/SKIPPED/FAILED)
 5. Config-driven risk gates with logged facts
 """
 import json
@@ -23,6 +23,7 @@ from db.repositories import (
     claim_pending_recommendations,
     mark_skipped,
     mark_simulated,
+    mark_executed,
     mark_failed,
     insert_execution,
     get_ticker_executions_today,
@@ -164,10 +165,32 @@ def process_recommendation(
         execution_id = insert_execution(conn, execution_data)
         
         if execution_id:
-            # Successfully inserted - mark recommendation as SIMULATED
-            mark_simulated(conn, rec_id, run_id, gate_results)
-            
-            log_event('execution_simulated', {
+            execution_mode = execution_data.get('execution_mode', 'SIMULATED')
+            is_simulated = str(execution_mode).startswith('SIMULATED')
+
+            if is_simulated:
+                # Successfully inserted - mark recommendation as SIMULATED
+                mark_simulated(conn, rec_id, run_id, gate_results)
+
+                log_event('execution_simulated', {
+                    'execution_id': execution_id,
+                    'recommendation_id': rec_id,
+                    'ticker': ticker,
+                    'action': execution_data['action'],
+                    'entry_price': entry_price,
+                    'qty': qty,
+                    'notional': notional,
+                    'stop_loss': stop_loss,
+                    'take_profit': take_profit,
+                    'execution_mode': execution_mode
+                })
+
+                return 'SIMULATED'
+
+            # ALPACA_PAPER (real) execution
+            mark_executed(conn, rec_id, run_id, gate_results)
+
+            log_event('execution_executed', {
                 'execution_id': execution_id,
                 'recommendation_id': rec_id,
                 'ticker': ticker,
@@ -176,10 +199,11 @@ def process_recommendation(
                 'qty': qty,
                 'notional': notional,
                 'stop_loss': stop_loss,
-                'take_profit': take_profit
+                'take_profit': take_profit,
+                'execution_mode': execution_mode
             })
-            
-            return 'SIMULATED'
+
+            return 'EXECUTED'
         else:
             # Already processed (UNIQUE constraint conflict) - idempotency in action
             log_event('execution_duplicate', {
@@ -188,9 +212,14 @@ def process_recommendation(
                 'message': 'Already executed (idempotency)'
             })
             
-            # Still mark as SIMULATED since execution exists
-            mark_simulated(conn, rec_id, run_id, gate_results)
-            return 'SIMULATED'
+            # Mark based on current execution_mode
+            execution_mode = execution_data.get('execution_mode', 'SIMULATED')
+            if str(execution_mode).startswith('SIMULATED'):
+                mark_simulated(conn, rec_id, run_id, gate_results)
+                return 'SIMULATED'
+
+            mark_executed(conn, rec_id, run_id, gate_results)
+            return 'EXECUTED'
     
     except Exception as e:
         # Processing error - mark as FAILED
@@ -259,6 +288,7 @@ def main():
             finalize_run(conn, run_id, {
                 'pulled': 0,
                 'processed': 0,
+                'executed': 0,
                 'simulated': 0,
                 'skipped': 0,
                 'failed': 0
@@ -301,6 +331,7 @@ def main():
         counts = {
             'pulled': len(recommendations),
             'processed': 0,
+            'executed': 0,
             'simulated': 0,
             'skipped': 0,
             'failed': 0

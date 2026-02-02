@@ -1,6 +1,15 @@
 # Current System Status - January 30, 2026
 
-**Update (Feb 2, 2026 ~1:10 PM ET):** Options trades were falling back to simulation due to a missing module import in the dispatcher (`No module named 'position_manager'`).  
+**Update (Feb 2, 2026 ~1:20 PM ET):** Options executions now mark **EXECUTED** for ALPACA_PAPER (no longer always SIMULATED).  
+Fixes real-trade tracking + avoids confusing simulated-only statuses.
+
+Deployed:
+- `dispatcher-service` → task definition `ops-pipeline-dispatcher:25` (image digest `sha256:c13b00fc...`)
+- `dispatcher-tiny-service` → task definition `ops-pipeline-dispatcher-tiny-service:9` (same image digest)
+
+Also raised `max_trades_per_ticker_per_day` to **10** in `/ops-pipeline/dispatcher_config` to avoid frequent gate skips.
+
+**Prior Update (Feb 2, 2026 ~1:10 PM ET):** Options trades were falling back to simulation due to a missing module import in the dispatcher (`No module named 'position_manager'`).  
 Fixed by making Kelly stats optional in `services/dispatcher/alpaca/broker.py`, and redeployed:
 - `dispatcher-service` → task definition `ops-pipeline-dispatcher:24` (image digest `sha256:0c02b213...`)
 - `dispatcher-tiny-service` → task definition `ops-pipeline-dispatcher-tiny-service:8` (same image digest)
@@ -11,7 +20,7 @@ Dispatchers were running and generating signals, but recent recommendations were
 
 **Last real trades:** Jan 29, 2026 ~11:17–11:36 AM ET (ALPACA_PAPER).
 
-**Last Updated:** Feb 2, 2026 6:10 PM UTC (1:10 PM ET)  
+**Last Updated:** Feb 2, 2026 6:20 PM UTC (1:20 PM ET)  
 **System:** Fully operational (Phases 1-17 complete)  
 **Trading:** Options API fixed, Phase 17 learning deployed  
 **Latest:** Shorting enabled, trade-stream WebSocket fixed and running
