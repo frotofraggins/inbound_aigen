@@ -1,0 +1,5 @@
+psycopg2-binary==2.9.9
+alpaca-py==0.43.2
+pytz==2024.1
+boto3==1.35.79
+requests==2.31.0

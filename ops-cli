@@ -1,0 +1,460 @@
+#!/usr/bin/env python3
+"""
+OPS-CLI: Operations Pipeline Command Line Interface
+Comprehensive tool for managing the trading system
+
+Usage:
+    ops-cli status              # System health check
+    ops-cli logs <service>      # View service logs
+    ops-cli data <query>        # Query database
+    ops-cli config get          # View current config
+    ops-cli config set <param>  # Update parameter
+    ops-cli services list       # List all services
+    ops-cli services stop <svc> # Stop a service
+    ops-cli services start <svc># Start a service
+    ops-cli deploy <service>    # Deploy new version
+    ops-cli mode options-only   # Enable options-only mode
+    ops-cli mode hybrid         # Enable options + stocks
+"""
+
+import sys
+import json
+import subprocess
+import argparse
+from datetime import datetime
+
+# Configuration
+REGION = "us-west-2"
+CLUSTER = "ops-pipeline-cluster"
+ACCOUNT = "160027201036"
+
+SERVICES = {
+    'dispatcher': 'dispatcher-service',
+    'dispatcher-tiny': 'dispatcher-tiny-service',
+    'telemetry': 'telemetry-service',
+    'classifier': 'ops-pipeline-classifier-service',
+    'position-manager': 'position-manager-service',
+    'trade-stream': 'trade-stream'
+}
+
+LOG_GROUPS = {
+    'dispatcher': '/ecs/ops-pipeline/dispatcher',
+    'signal': '/ecs/ops-pipeline/signal-engine-1m',
+    'telemetry': '/ecs/ops-pipeline/telemetry',
+    'classifier': '/ecs/ops-pipeline/classifier',
+    'position': '/ecs/ops-pipeline/position-manager',
+    'trade-stream': '/ecs/ops-pipeline/trade-stream'
+}
+
+# Colors for terminal output
+class Colors:
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    BLUE = '\033[94m'
+    END = '\033[0m'
+    BOLD = '\033[1m'
+
+def run_cmd(cmd, capture=True):
+    """Run shell command and return output"""
+    if capture:
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        return result.stdout.strip()
+    else:
+        subprocess.run(cmd, shell=True)
+        return None
+
+def print_header(text):
+    """Print formatted header"""
+    print(f"\n{Colors.BOLD}{'='*80}{Colors.END}")
+    print(f"{Colors.BOLD}{text.center(80)}{Colors.END}")
+    print(f"{Colors.BOLD}{'='*80}{Colors.END}\n")
+
+def print_success(text):
+    print(f"{Colors.GREEN}✓ {text}{Colors.END}")
+
+def print_error(text):
+    print(f"{Colors.RED}✗ {text}{Colors.END}")
+
+def print_warning(text):
+    print(f"{Colors.YELLOW}⚠ {text}{Colors.END}")
+
+def print_info(text):
+    print(f"{Colors.BLUE}ℹ {text}{Colors.END}")
+
+#
+# STATUS Commands
+#
+
+def cmd_status():
+    """Show complete system status"""
+    print_header("SYSTEM STATUS CHECK")
+    
+    # Check ECS cluster
+    print(f"{Colors.BOLD}ECS Cluster:{Colors.END}")
+    cluster_info = run_cmd(f"aws ecs describe-clusters --clusters {CLUSTER} --region {REGION} --query 'clusters[0].{{Status:status,Services:activeServicesCount,Tasks:runningTasksCount}}' --output json")
+    cluster = json.loads(cluster_info)
+    
+    if cluster.get('Status') == 'ACTIVE':
+        print_success(f"Cluster: {CLUSTER} ({cluster['Services']} services, {cluster['Tasks']} tasks)")
+    else:
+        print_error(f"Cluster not active")
+        return
+    
+    # Check services
+    print(f"\n{Colors.BOLD}Services:{Colors.END}")
+    for name, service_name in SERVICES.items():
+        svc_info = run_cmd(f"aws ecs describe-services --cluster {CLUSTER} --services {service_name} --region {REGION} --query 'services[0].{{Status:status,Running:runningCount,Desired:desiredCount}}' --output json")
+        try:
+            svc = json.loads(svc_info)
+            if svc['Running'] == svc['Desired'] and svc['Running'] > 0:
+                print_success(f"{name:20s} Running: {svc['Running']}/{svc['Desired']}")
+            elif svc['Desired'] == 0:
+                print_warning(f"{name:20s} Stopped (desired=0)")
+            else:
+                print_error(f"{name:20s} Unhealthy: {svc['Running']}/{svc['Desired']}")
+        except:
+            print_error(f"{name:20s} Not found")
+    
+    # Check database
+    print(f"\n{Colors.BOLD}Database:{Colors.END}")
+    db_status = run_cmd(f"aws rds describe-db-instances --region {REGION} --query 'DBInstances[?DBInstanceIdentifier==`ops-pipeline-db`].{{Status:DBInstanceStatus}}' --output text")
+    if db_status == 'available':
+        print_success(f"RDS: ops-pipeline-db (available)")
+    else:
+        print_error(f"RDS: {db_status}")
+    
+    # Check recent signals
+    print(f"\n{Colors.BOLD}Recent Activity:{Colors.END}")
+    recent_logs = run_cmd(f"aws logs tail {LOG_GROUPS['signal']} --region {REGION} --since 5m --format short 2>&1 | grep signal_computed | tail -3")
+    if recent_logs:
+        print_info("Last 3 signals:")
+        for line in recent_logs.split('\n')[:3]:
+            print(f"  {line[:120]}")
+    else:
+        print_warning("No recent signals (< 5 min)")
+    
+    print("")
+
+#
+# LOGS Commands
+#
+
+def cmd_logs(args):
+    """View service logs"""
+    service = args.service
+    
+    if service not in LOG_GROUPS:
+        print_error(f"Unknown service: {service}")
+        print_info(f"Available: {', '.join(LOG_GROUPS.keys())}")
+        return
+    
+    log_group = LOG_GROUPS[service]
+    since = args.since or "10m"
+    
+    print_header(f"LOGS: {service}")
+    print_info(f"Log group: {log_group}")
+    print_info(f"Since: {since}")
+    print_info("Press Ctrl+C to stop\n")
+    
+    if args.follow:
+        run_cmd(f"aws logs tail {log_group} --region {REGION} --since {since} --follow", capture=False)
+    else:
+        output = run_cmd(f"aws logs tail {log_group} --region {REGION} --since {since}")
+        print(output)
+
+#
+# DATA Commands
+#
+
+def cmd_data(args):
+    """Query database via Lambda"""
+    import boto3
+    
+    client = boto3.client('lambda', region_name=REGION)
+    
+    # Predefined queries
+    queries = {
+        'signals': "SELECT ticker, action, instrument_type, confidence, reason::text FROM dispatch_recommendations ORDER BY ts DESC LIMIT 20",
+        'trades': "SELECT ticker, action, instrument_type, execution_mode, entry_price, qty FROM dispatch_executions ORDER BY simulated_ts DESC LIMIT 20",
+        'positions': "SELECT ticker, instrument_type, side, quantity, entry_price, current_price, unrealized_pnl FROM active_positions ORDER BY entered_at DESC",
+        'features': "SELECT ticker, close, sma20, sma50, volume_ratio, trend_state FROM lane_features_clean ORDER BY computed_at DESC LIMIT 20",
+        'telemetry': "SELECT ticker, ts, close, volume FROM lane_telemetry ORDER BY ts DESC LIMIT 20"
+    }
+    
+    if args.query in queries:
+        sql = queries[args.query]
+    elif args.custom:
+        sql = args.custom
+    else:
+        print_error("Must specify --query or --custom")
+        print_info(f"Available queries: {', '.join(queries.keys())}")
+        return
+    
+    print_header("DATABASE QUERY")
+    print_info(f"SQL: {sql}\n")
+    
+    try:
+        response = client.invoke(
+            FunctionName='ops-pipeline-db-query',
+            Payload=json.dumps({'sql': sql})
+        )
+        
+        result = json.loads(json.load(response['Payload'])['body'])
+        rows = result.get('rows', [])
+        
+        if not rows:
+            print_warning("No results")
+            return
+        
+        # Print as table
+        if rows:
+            headers = rows[0].keys()
+            print(f"{Colors.BOLD}", end='')
+            for h in headers:
+                print(f"{h:20s}", end=' ')
+            print(Colors.END)
+            print("-" * (len(headers) * 21))
+            
+            for row in rows[:args.limit]:
+                for val in row.values():
+                    val_str = str(val)[:18] if val is not None else "NULL"
+                    print(f"{val_str:20s}", end=' ')
+                print()
+        
+        print(f"\n{len(rows)} rows returned")
+        
+    except Exception as e:
+        print_error(f"Query failed: {e}")
+
+#
+# CONFIG Commands
+#
+
+def cmd_config_get():
+    """View current configuration"""
+    print_header("CURRENT CONFIGURATION")
+    
+    config_json = run_cmd(f"aws ssm get-parameter --name /ops-pipeline/dispatcher_config --region {REGION} --query 'Parameter.Value' --output text")
+    config = json.loads(config_json)
+    
+    print(json.dumps(config, indent=2))
+
+def cmd_config_set(args):
+    """Update configuration parameter"""
+    param_map = {
+        'confidence': 'confidence_min_options_daytrade',
+        'volume': 'min_volume_ratio',  
+        'max_trades': 'max_trades_per_ticker_per_day'
+    }
+    
+    if args.param not in param_map:
+        print_error(f"Unknown parameter: {args.param}")
+        print_info(f"Available: {', '.join(param_map.keys())}")
+        return
+    
+    # Load current config
+    config_json = run_cmd(f"aws ssm get-parameter --name /ops-pipeline/dispatcher_config --region {REGION} --query 'Parameter.Value' --output text")
+    config = json.loads(config_json)
+    
+    # Update parameter
+    config_key = param_map[args.param]
+    old_value = config.get(config_key)
+    config[config_key] = float(args.value) if '.' in str(args.value) else int(args.value)
+    
+    print_info(f"Updating {args.param} ({config_key}): {old_value} → {config[config_key]}")
+    
+    # Save
+    run_cmd(f"aws ssm put-parameter --name /ops-pipeline/dispatcher_config --value '{json.dumps(config)}' --type String --overwrite --region {REGION}")
+    
+    print_success("Configuration updated!")
+    print_warning("Dispatcher will reload config on next run (< 5 min)")
+
+#
+# SERVICE Commands
+#
+
+def cmd_services_list():
+    """List all services with status"""
+    print_header("ECS SERVICES")
+    
+    for name, service_name in SERVICES.items():
+        svc_info = run_cmd(f"aws ecs describe-services --cluster {CLUSTER} --services {service_name} --region {REGION} --query 'services[0]' --output json")
+        try:
+            svc = json.loads(svc_info)
+            status = "✓ Running" if svc['runningCount'] == svc['desiredCount'] else f"⚠ {svc['runningCount']}/{svc['desiredCount']}"
+            print(f"{name:20s} {status:20s} (revision {svc['taskDefinition'].split(':')[-1]})")
+        except:
+            print(f"{name:20s} ✗ Not found")
+
+def cmd_services_stop(args):
+    """Stop a service"""
+    service_name = SERVICES.get(args.service)
+    if not service_name:
+        print_error(f"Unknown service: {args.service}")
+        return
+    
+    print_warning(f"Stopping {args.service}...")
+    run_cmd(f"aws ecs update-service --cluster {CLUSTER} --service {service_name} --desired-count 0 --region {REGION}")
+    print_success(f"Service {args.service} stopped")
+
+def cmd_services_start(args):
+    """Start a service"""
+    service_name = SERVICES.get(args.service)
+    if not service_name:
+        print_error(f"Unknown service: {args.service}")
+        return
+    
+    print_info(f"Starting {args.service}...")
+    run_cmd(f"aws ecs update-service --cluster {CLUSTER} --service {service_name} --desired-count 1 --region {REGION}")
+    print_success(f"Service {args.service} started")
+
+#
+# MODE Commands
+#
+
+def cmd_mode_options_only():
+    """Enable options-only trading mode"""
+    run_cmd("bash scripts/enable_options_only_mode.sh", capture=False)
+
+def cmd_mode_hybrid():
+    """Enable hybrid (options + stocks) mode"""
+    print_header("ENABLE HYBRID MODE")
+    
+    config_json = run_cmd(f"aws ssm get-parameter --name /ops-pipeline/dispatcher_config --region {REGION} --query 'Parameter.Value' --output text")
+    config = json.loads(config_json)
+    
+    config['allowed_actions'] = ['BUY_CALL', 'BUY_PUT', 'BUY_STOCK', 'SELL_STOCK']
+    config['options_only_mode'] = False
+    
+    run_cmd(f"aws ssm put-parameter --name /ops-pipeline/dispatcher_config --value '{json.dumps(config)}' --type String --overwrite --region {REGION}")
+    
+    print_success("Hybrid mode enabled (options + stocks)")
+
+#
+# DEPLOY Commands
+#
+
+def cmd_deploy(args):
+    """Deploy a service"""
+    print_header(f"DEPLOYING: {args.service}")
+    print_warning("This will build, push to ECR, and update ECS task definition")
+    print("")
+    
+    # Map service name to directory
+    service_dirs = {
+        'dispatcher': 'services/dispatcher',
+        'signal-engine': 'services/signal_engine_1m',
+        'telemetry': 'services/telemetry_ingestor_1m',
+        'position-manager': 'services/position_manager',
+        'classifier': 'services/classifier_worker',
+        'trade-stream': 'services/trade_stream'
+    }
+    
+    if args.service not in service_dirs:
+        print_error(f"Unknown service: {args.service}")
+        print_info(f"Available: {', '.join(service_dirs.keys())}")
+        return
+    
+    service_dir = service_dirs[args.service]
+    
+    print_info(f"1. Building Docker image from {service_dir}...")
+    run_cmd(f"cd {service_dir} && docker build -t {args.service} .")
+    
+    print_info(f"2. Tagging for ECR...")
+    run_cmd(f"docker tag {args.service}:latest {ACCOUNT}.dkr.ecr.{REGION}.amazonaws.com/ops-pipeline/{args.service}:latest")
+    
+    print_info(f"3. Logging into ECR...")
+    run_cmd(f"aws ecr get-login-password --region {REGION} | docker login --username AWS --password-stdin {ACCOUNT}.dkr.ecr.{REGION}.amazonaws.com")
+    
+    print_info(f"4. Pushing to ECR...")
+    run_cmd(f"docker push {ACCOUNT}.dkr.ecr.{REGION}.amazonaws.com/ops-pipeline/{args.service}:latest")
+    
+    print_success(f"Deployed! ECS will automatically pick up new image.")
+
+#
+# MAIN
+#
+
+def main():
+    parser = argparse.ArgumentParser(description='Operations Pipeline CLI')
+    subparsers = parser.add_subparsers(dest='command', help='Command to run')
+    
+    # STATUS
+    subparsers.add_parser('status', help='Show system status')
+    
+    # LOGS
+    logs_parser = subparsers.add_parser('logs', help='View service logs')
+    logs_parser.add_argument('service', choices=LOG_GROUPS.keys(), help='Service name')
+    logs_parser.add_argument('--since', default='10m', help='Time range (e.g., 10m, 1h, 1d)')
+    logs_parser.add_argument('--follow', '-f', action='store_true', help='Follow logs in real-time')
+    
+    # DATA
+    data_parser = subparsers.add_parser('data', help='Query database')
+    data_parser.add_argument('--query', choices=['signals', 'trades', 'positions', 'features', 'telemetry'], help='Predefined query')
+    data_parser.add_argument('--custom', help='Custom SQL query')
+    data_parser.add_argument('--limit', type=int, default=20, help='Max rows to display')
+    
+    # CONFIG
+    config_parser = subparsers.add_parser('config', help='Configuration management')
+    config_sub = config_parser.add_subparsers(dest='config_command')
+    config_sub.add_parser('get', help='View current config')
+    config_set = config_sub.add_parser('set', help='Set parameter')
+    config_set.add_argument('param', choices=['confidence', 'volume', 'max_trades'], help='Parameter name')
+    config_set.add_argument('value', help='New value')
+    
+    # SERVICES
+    services_parser = subparsers.add_parser('services', help='Service management')
+    services_sub = services_parser.add_subparsers(dest='services_command')
+    services_sub.add_parser('list', help='List all services')
+    stop_parser = services_sub.add_parser('stop', help='Stop a service')
+    stop_parser.add_argument('service', choices=SERVICES.keys())
+    start_parser = services_sub.add_parser('start', help='Start a service')
+    start_parser.add_argument('service', choices=SERVICES.keys())
+    
+    # MODE
+    mode_parser = subparsers.add_parser('mode', help='Trading mode')
+    mode_sub = mode_parser.add_subparsers(dest='mode_command')
+    mode_sub.add_parser('options-only', help='Trade only options (CALL/PUT)')
+    mode_sub.add_parser('hybrid', help='Trade options + stocks')
+    
+    # DEPLOY
+    deploy_parser = subparsers.add_parser('deploy', help='Deploy service')
+    deploy_parser.add_argument('service', help='Service to deploy')
+    
+    # Parse args
+    args = parser.parse_args()
+    
+    if not args.command:
+        parser.print_help()
+        return
+    
+    # Route to handler
+    if args.command == 'status':
+        cmd_status()
+    elif args.command == 'logs':
+        cmd_logs(args)
+    elif args.command == 'data':
+        cmd_data(args)
+    elif args.command == 'config':
+        if args.config_command == 'get':
+            cmd_config_get()
+        elif args.config_command == 'set':
+            cmd_config_set(args)
+    elif args.command == 'services':
+        if args.services_command == 'list':
+            cmd_services_list()
+        elif args.services_command == 'stop':
+            cmd_services_stop(args)
+        elif args.services_command == 'start':
+            cmd_services_start(args)
+    elif args.command == 'mode':
+        if args.mode_command == 'options-only':
+            cmd_mode_options_only()
+        elif args.mode_command == 'hybrid':
+            cmd_mode_hybrid()
+    elif args.command == 'deploy':
+        cmd_deploy(args)
+
+if __name__ == '__main__':
+    main()

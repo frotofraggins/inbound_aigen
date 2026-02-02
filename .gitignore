@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Secrets and Credentials
+*.pem
+*.key
+*.env
+.env.*
+secrets/
+*.secret
+*_secret*
+credentials/
+
+# AWS
+.aws/
+*.zip
+awscliv2.zip
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+*.out
+
+# Docker
+.dockerignore
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+
+# Lambda packages
+services/*/package/
+services/*/*.zip
+services/*/lambda_deployment.zip
+
+# Keep the structure but ignore generated content
+!services/db_query_lambda/package/.gitkeep
+!services/db_migration_lambda/package/.gitkeep

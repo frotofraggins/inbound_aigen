@@ -1,0 +1,25 @@
+{
+  "family": "ticker-discovery",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::160027201036:role/ops-pipeline-ecs-task-role",
+  "taskRoleArn": "arn:aws:iam::160027201036:role/ops-pipeline-ecs-task-role",
+  "containerDefinitions": [
+    {
+      "name": "ticker-discovery",
+      "image": "160027201036.dkr.ecr.us-west-2.amazonaws.com/ops-pipeline/ticker-discovery@sha256:5942c401619fcc37dee785abf601ce4153bd5ebd876427756971f4ffb9127ad3",
+      "essential": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/ops-pipeline/ticker-discovery",
+          "awslogs-region": "us-west-2",
+          "awslogs-stream-prefix": "ticker-discovery",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+{
+  "family": "trade-stream",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::160027201036:role/ops-pipeline-ecs-task-role",
+  "taskRoleArn": "arn:aws:iam::160027201036:role/ops-pipeline-ecs-task-role",
+  "containerDefinitions": [
+    {
+      "name": "trade-stream",
+      "image": "160027201036.dkr.ecr.us-west-2.amazonaws.com/ops-pipeline/trade-stream@sha256:115899172d44b6e6d98278ad4c51c6a86ab39ff0e273fe73e9f0bfdee2d874a7",
+      "essential": true,
+      "secrets": [
+        {
+          "name": "ALPACA_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:us-west-2:160027201036:secret:ops-pipeline/alpaca-OIlzf2:api_key::"
+        },
+        {
+          "name": "ALPACA_API_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:us-west-2:160027201036:secret:ops-pipeline/alpaca-OIlzf2:api_secret::"
+        },
+        {
+          "name": "DB_PASSWORD",
+          "valueFrom": "arn:aws:secretsmanager:us-west-2:160027201036:secret:ops-pipeline/db-l4GRCY:password::"
+        },
+        {
+          "name": "DB_USER",
+          "valueFrom": "arn:aws:secretsmanager:us-west-2:160027201036:secret:ops-pipeline/db-l4GRCY:username::"
+        }
+      ],
+      "environment": [
+        {
+          "name": "ALPACA_BASE_URL",
+          "value": "https://paper-api.alpaca.markets"
+        },
+        {
+          "name": "DB_HOST",
+          "value": "ops-pipeline-db.cls4wuyg010k.us-west-2.rds.amazonaws.com"
+        },
+        {
+          "name": "DB_PORT",
+          "value": "5432"
+        },
+        {
+          "name": "DB_NAME",
+          "value": "ops_pipeline"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/ops-pipeline/trade-stream",
+          "awslogs-region": "us-west-2",
+          "awslogs-stream-prefix": "trade-stream",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

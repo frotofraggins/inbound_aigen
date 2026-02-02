@@ -1,0 +1,31 @@
+{
+  "family": "ops-pipeline-db-migrator",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::160027201036:role/ops-pipeline-ecs-task-role",
+  "taskRoleArn": "arn:aws:iam::160027201036:role/ops-pipeline-ecs-task-role",
+  "containerDefinitions": [
+    {
+      "name": "db-migrator",
+      "image": "160027201036.dkr.ecr.us-west-2.amazonaws.com/ops-pipeline/db-migrator@sha256:35b610dec4e5f81eed19a0978ecd193faafd8c3e483f44ad61df529f1eebc809",
+      "essential": true,
+      "environment": [
+        {
+          "name": "MIGRATION_FILE",
+          "value": "006_fix_dispatcher_status_constraint.sql"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/ops-pipeline/db-migrator",
+          "awslogs-region": "us-west-2",
+          "awslogs-stream-prefix": "migrator",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "family": "position-manager",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::160027201036:role/ops-pipeline-ecs-task-role",
+  "taskRoleArn": "arn:aws:iam::160027201036:role/ops-pipeline-ecs-task-role",
+  "containerDefinitions": [
+    {
+      "name": "position-manager",
+      "image": "160027201036.dkr.ecr.us-west-2.amazonaws.com/ops-pipeline/position-manager@sha256:1236df31346a6122d9d9d63e1f19bc8c03d8d8ff0d72f94888abab9d219e317e",
+      "essential": true,
+      "environment": [
+        {"name": "AWS_REGION", "value": "us-west-2"},
+        {"name": "LOG_LEVEL", "value": "INFO"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/ops-pipeline/position-manager",
+          "awslogs-region": "us-west-2",
+          "awslogs-stream-prefix": "position-manager",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

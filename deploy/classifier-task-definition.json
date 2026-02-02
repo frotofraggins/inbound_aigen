@@ -1,0 +1,25 @@
+{
+  "family": "ops-pipeline-classifier-worker",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::160027201036:role/ops-pipeline-ecs-task-role",
+  "taskRoleArn": "arn:aws:iam::160027201036:role/ops-pipeline-ecs-task-role",
+  "containerDefinitions": [
+    {
+      "name": "classifier-worker",
+      "image": "160027201036.dkr.ecr.us-west-2.amazonaws.com/ops-pipeline/classifier-worker@sha256:906557742dc13b3a435064c9a276ae730883c9e699ef0e554220dca67ae2dd52",
+      "essential": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/ops-pipeline/classifier-worker",
+          "awslogs-region": "us-west-2",
+          "awslogs-stream-prefix": "classifier",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

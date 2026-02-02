@@ -1,0 +1,28 @@
+{
+  "family": "ops-pipeline-feature-computer-1m",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::160027201036:role/ops-pipeline-ecs-task-role",
+  "taskRoleArn": "arn:aws:iam::160027201036:role/ops-pipeline-ecs-task-role",
+  "containerDefinitions": [
+    {
+      "name": "feature-computer",
+            "image": "160027201036.dkr.ecr.us-west-2.amazonaws.com/ops-pipeline/feature-computer-1m@sha256:ef7abf043b3baa8bbaf725beef33e69a2a3fe0fab775ac5977aade5cc81a7a07",
+      "essential": true,
+      "environment": [
+        {"name": "AWS_REGION", "value": "us-west-2"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/ops-pipeline/feature-computer-1m",
+          "awslogs-region": "us-west-2",
+          "awslogs-stream-prefix": "features",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

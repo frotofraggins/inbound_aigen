@@ -1,0 +1,25 @@
+{
+  "family": "ops-pipeline-rss-ingest",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::160027201036:role/ops-pipeline-ecs-task-role",
+  "taskRoleArn": "arn:aws:iam::160027201036:role/ops-pipeline-ecs-task-role",
+  "containerDefinitions": [
+    {
+      "name": "rss-ingest",
+      "image": "160027201036.dkr.ecr.us-west-2.amazonaws.com/ops-pipeline/rss-ingest:latest",
+      "essential": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/ops-pipeline-rss-ingest",
+          "awslogs-region": "us-west-2",
+          "awslogs-stream-prefix": "rss-ingest",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

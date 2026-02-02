@@ -1,0 +1,30 @@
+{
+  "family": "ops-pipeline-dispatcher-tiny",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::160027201036:role/ops-pipeline-ecs-task-role",
+  "taskRoleArn": "arn:aws:iam::160027201036:role/ops-pipeline-ecs-task-role",
+  "containerDefinitions": [
+    {
+      "name": "dispatcher",
+      "image": "160027201036.dkr.ecr.us-west-2.amazonaws.com/ops-pipeline/dispatcher@sha256:29148b46131806d71d91ceba806e52c0667123f8ff115b41912351b8f7640593",
+      "essential": true,
+      "environment": [
+        {"name": "AWS_REGION", "value": "us-west-2"},
+        {"name": "EXECUTION_MODE", "value": "ALPACA_PAPER"},
+        {"name": "ACCOUNT_TIER", "value": "tiny"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/ops-pipeline/dispatcher-tiny",
+          "awslogs-region": "us-west-2",
+          "awslogs-stream-prefix": "dispatcher-tiny",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

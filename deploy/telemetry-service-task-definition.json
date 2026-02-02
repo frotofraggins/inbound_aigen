@@ -1,0 +1,43 @@
+{
+  "family": "telemetry-service",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::160027201036:role/ops-pipeline-ecs-task-role",
+  "taskRoleArn": "arn:aws:iam::160027201036:role/ops-pipeline-ecs-task-role",
+  "containerDefinitions": [
+    {
+      "name": "telemetry",
+      "image": "160027201036.dkr.ecr.us-west-2.amazonaws.com/ops-pipeline/telemetry:service-mode",
+      "essential": true,
+      "environment": [
+        {
+          "name": "RUN_MODE",
+          "value": "LOOP"
+        },
+        {
+          "name": "DATA_SOURCE",
+          "value": "alpaca"
+        },
+        {
+          "name": "LOOKBACK_MINUTES",
+          "value": "120"
+        },
+        {
+          "name": "INTERVAL",
+          "value": "1m"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/ops-pipeline/telemetry-service",
+          "awslogs-region": "us-west-2",
+          "awslogs-stream-prefix": "telemetry",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

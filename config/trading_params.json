@@ -1,0 +1,181 @@
+{
+  "description": "Production-grade trading parameters - Sentiment as scaler, not gate",
+  "version": "2.0-production",
+  "last_updated": "2026-01-27",
+  
+  "signal_logic": {
+    "note": "Direction determined by price action + trend, NOT sentiment",
+    "direction_source": "price_relative_to_sma20 + trend_state",
+    "sentiment_role": "confidence_scaler",
+    "sentiment_boost_max": 0.25,
+    "sentiment_penalty_max": 0.20
+  },
+  
+  "sma_parameters": {
+    "sma_tolerance": 0.005,
+    "description": "±0.5% from SMA20 counts as 'at' the level",
+    "max_stretch": 0.02,
+    "description_stretch": "Within 2% of SMA20 for entry"
+  },
+  
+  "volume_thresholds": {
+    "kill_threshold": 0.5,
+    "description_kill": "< 0.5x volume = kill signal (no trade)",
+    "min_for_trade": 1.2,
+    "description_min": "Minimum 1.2x for any trade consideration",
+    "surge_threshold": 2.0,
+    "description_surge": "2.0x+ confirms strong directional move",
+    
+    "multipliers": {
+      "note": "Volume multipliers applied to confidence",
+      "below_0.5": 0.0,
+      "0.5_to_1.2": 0.3,
+      "1.2_to_1.5": 0.6,
+      "1.5_to_2.0": 1.0,
+      "2.0_to_3.0": 1.15,
+      "3.0_to_5.0": 1.25,
+      "above_5.0": 1.35
+    }
+  },
+  
+  "confidence_thresholds": {
+    "day_trade_base": 0.60,
+    "description_day": "Base threshold for 0-1 DTE options",
+    "swing_trade": 0.45,
+    "description_swing": "Threshold for 7-30 DTE options",
+    "stock": 0.35,
+    "description_stock": "Threshold for stock trades (lower risk)",
+    
+    "adaptive_adjustment": {
+      "note": "Increase threshold when vol_ratio > 1.2 (options expensive)",
+      "formula": "base + 0.10 * ((vol_ratio - 1.2) / 0.2)",
+      "max_threshold": 0.85,
+      "example": "vol_ratio=1.6 → threshold=0.80"
+    }
+  },
+  
+  "breakout_confirmation": {
+    "note": "Filters chop from real directional moves",
+    "current_method": "sma_distance",
+    "bullish_breakout": "distance_sma20 > 0.01 (1% above)",
+    "bearish_breakout": "distance_sma20 < -0.01 (1% below)",
+    "penalty_no_confirm": 0.5,
+    "description": "Confidence reduced 50% without breakout",
+    
+    "future_enhancements": {
+      "momentum_5m": 0.002,
+      "momentum_15m": 0.004,
+      "recent_high_low": "Add to features table"
+    }
+  },
+  
+  "confidence_components": {
+    "note": "How base confidence is calculated",
+    "trend_alignment": 0.35,
+    "setup_quality": 0.25,
+    "vol_appropriateness": 0.20,
+    "base_conviction": 0.20
+  },
+  
+  "account_tiers": {
+    "note": "Dynamic risk management based on account size - PHASE 1 IMPLEMENTED",
+    "enabled": true,
+    "tiers": {
+      "tiny": {
+        "max_size": 2000,
+        "risk_pct_day": 0.25,
+        "risk_pct_swing": 0.15,
+        "max_contracts": 2,
+        "description": "$1K-2K accounts: 25% day risk, aggressive growth"
+      },
+      "small": {
+        "max_size": 5000,
+        "risk_pct_day": 0.12,
+        "risk_pct_swing": 0.08,
+        "max_contracts": 3,
+        "description": "$2K-5K accounts: 12% day risk, balanced growth"
+      },
+      "medium": {
+        "max_size": 25000,
+        "risk_pct_day": 0.04,
+        "risk_pct_swing": 0.06,
+        "max_contracts": 5,
+        "description": "$5K-25K accounts: 4% day risk, moderate"
+      },
+      "large": {
+        "risk_pct_day": 0.01,
+        "risk_pct_swing": 0.02,
+        "max_contracts": 10,
+        "description": "$25K+ accounts: 1% day risk, professional"
+      }
+    }
+  },
+  
+  "liquidity_thresholds": {
+    "note": "PHASE 1 IMPLEMENTED: Spread calc fixed, minimum premium added",
+    "max_spread_pct": 10.0,
+    "description_spread": "10% max spread (using MID not BID)",
+    "min_premium": 0.30,
+    "description_premium": "$0.30 minimum to avoid lottery tickets",
+    "min_open_interest": 500,
+    "description_oi": "PHASE 2: 500+ OI for liquidity",
+    "min_volume": 200,
+    "description_vol": "PHASE 2: 200+ volume for liquidity"
+  },
+  
+  "options_gates_todo": {
+    "note": "PHASE 2: Additional gates to implement",
+    "iv_percentile_max": 80,
+    "description_iv": "Don't buy when IV > 80th percentile",
+    "contract_quality_scoring": true,
+    "description_quality": "Score by spread + OI + volume + delta",
+    "implementation": "Requires greeks data in features table"
+  },
+  
+  "risk_controls_todo": {
+    "note": "Account-level controls to implement in dispatcher",
+    "max_daily_loss": 500,
+    "description_daily": "Kill switch after $500 loss",
+    "max_open_positions": 5,
+    "max_notional_exposure": 10000,
+    "cooloff_after_losses": 3,
+    "description_cooloff": "Pause ticker after 3 losses in a row",
+    "no_trade_first_minutes": 5,
+    "description_opening": "Wait 5 min after market open",
+    "no_trade_last_minutes": 15,
+    "description_closing": "No new positions last 15 min of day"
+  },
+  
+  "volatility_regimes": {
+    "compressed": "vol_ratio < 0.8",
+    "normal": "0.8 <= vol_ratio <= 1.3",
+    "high": "vol_ratio > 1.3",
+    "extreme": "vol_ratio >= 1.6"
+  },
+  
+  "instrument_selection": {
+    "note": "Based on volatility regime and confidence",
+    "if_normal_or_compressed": "Prefer CALL/PUT (options reasonable)",
+    "if_high_vol": "Use STOCK (options expensive)",
+    "day_trade_requires": "confidence >= adaptive_threshold AND volume >= 2.0x",
+    "swing_trade_requires": "confidence >= 0.45",
+    "fallback_to_stock": "confidence < thresholds"
+  },
+  
+  "implementation_notes": {
+    "current_status": "Phase 2.0 - Production logic implemented",
+    "improvements_from_1.0": [
+      "Sentiment changed from gate to scaler",
+      "Direction from price action, not sentiment",
+      "Breakout confirmation added",
+      "Adaptive confidence by volatility",
+      "Better volume multipliers"
+    ],
+    "still_todo": [
+      "Options gates (IV, spread, liquidity)",
+      "Account-level risk controls",
+      "Momentum confirmation (5m/15m returns)",
+      "Load params from SSM for dynamic tuning"
+    ]
+  }
+}
