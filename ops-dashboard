@@ -1,0 +1,370 @@
+#!/usr/bin/env python3
+"""
+OPS-DASHBOARD: Interactive Menu-Driven Interface
+Like qchat - press numbers to navigate
+
+Usage:
+    ./ops-dashboard
+    
+Then use menu options like:
+    1 - System Status
+    2 - View Logs
+    3 - Query Data
+    4 - Manage Config
+    5 - Control Services
+    6 - Trading Mode
+    q - Quit
+"""
+
+import sys
+import os
+import subprocess
+import time
+
+# Configuration
+REGION = "us-west-2"
+CLUSTER = "ops-pipeline-cluster"
+
+# Colors
+class C:
+    G = '\033[92m'  # Green
+    Y = '\033[93m'  # Yellow
+    R = '\033[91m'  # Red
+    B = '\033[94m'  # Blue
+    M = '\033[95m'  # Magenta
+    C = '\033[96m'  # Cyan
+    W = '\033[97m'  # White
+    END = '\033[0m'
+    BOLD = '\033[1m'
+    CLEAR = '\033[2J\033[H'  # Clear screen
+
+def clear():
+    """Clear terminal"""
+    print(C.CLEAR, end='')
+
+def header(text):
+    """Print header"""
+    clear()
+    print(f"{C.BOLD}{C.B}{'='*80}{C.END}")
+    print(f"{C.BOLD}{C.B}{text.center(80)}{C.END}")
+    print(f"{C.BOLD}{C.B}{'='*80}{C.END}\n")
+
+def run(cmd):
+    """Run command and return output"""
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    return result.stdout
+
+def pause():
+    """Wait for user to press enter"""
+    input(f"\n{C.Y}Press Enter to continue...{C.END}")
+
+#
+# MAIN MENU
+#
+
+def main_menu():
+    """Display main menu"""
+    header("OPS-PIPELINE DASHBOARD")
+    
+    print(f"{C.BOLD}{C.G}MONITORING:{C.END}")
+    print(f"  {C.C}1{C.END} - System Status")
+    print(f"  {C.C}2{C.END} - View Logs")
+    print(f"  {C.C}3{C.END} - Query Database")
+    print()
+    
+    print(f"{C.BOLD}{C.Y}CONFIGURATION:{C.END}")
+    print(f"  {C.C}4{C.END} - View Config")
+    print(f"  {C.C}5{C.END} - Update Parameters")
+    print(f"  {C.C}6{C.END} - Trading Mode")
+    print()
+    
+    print(f"{C.BOLD}{C.M}SERVICES:{C.END}")
+    print(f"  {C.C}7{C.END} - List Services")
+    print(f"  {C.C}8{C.END} - Start/Stop Service")
+    print()
+    
+    print(f"{C.BOLD}{C.R}OTHER:{C.END}")
+    print(f"  {C.C}9{C.END} - Deploy Service")
+    print(f"  {C.C}h{C.END} - Help")
+    print(f"  {C.C}q{C.END} - Quit")
+    print()
+    
+    choice = input(f"{C.BOLD}Select option: {C.END}").strip().lower()
+    return choice
+
+#
+# MENU HANDLERS
+#
+
+def menu_status():
+    """System status"""
+    header("SYSTEM STATUS")
+    os.system("./ops-cli status")
+    pause()
+
+def menu_logs():
+    """View logs"""
+    header("VIEW LOGS")
+    
+    print(f"{C.BOLD}Available services:{C.END}")
+    print(f"  {C.C}1{C.END} - Signal Engine (trading signals)")
+    print(f"  {C.C}2{C.END} - Dispatcher (trade execution)")
+    print(f"  {C.C}3{C.END} - Telemetry (price data)")
+    print(f"  {C.C}4{C.END} - Position Manager (exit monitoring)")
+    print(f"  {C.C}5{C.END} - Trade Stream (WebSocket)")
+    print(f"  {C.C}b{C.END} - Back")
+    print()
+    
+    service_map = {
+        '1': 'signal',
+        '2': 'dispatcher', 
+        '3': 'telemetry',
+        '4': 'position',
+        '5': 'trade-stream'
+    }
+    
+    choice = input(f"{C.BOLD}Select service: {C.END}").strip()
+    
+    if choice == 'b':
+        return
+    
+    if choice not in service_map:
+        print(f"{C.R}Invalid choice{C.END}")
+        time.sleep(1)
+        return
+    
+    service = service_map[choice]
+    
+    print(f"\n{C.Y}Options:{C.END}")
+    print(f"  {C.C}1{C.END} - Last 10 minutes")
+    print(f"  {C.C}2{C.END} - Last hour")
+    print(f"  {C.C}3{C.END} - Follow live (Ctrl+C to stop)")
+    print()
+    
+    time_choice = input(f"{C.BOLD}Select: {C.END}").strip()
+    
+    if time_choice == '1':
+        os.system(f"./ops-cli logs {service} --since 10m | less")
+    elif time_choice == '2':
+        os.system(f"./ops-cli logs {service} --since 1h | less")
+    elif time_choice == '3':
+        print(f"\n{C.G}Following logs live... Press Ctrl+C to stop{C.END}\n")
+        time.sleep(2)
+        os.system(f"./ops-cli logs {service} --follow")
+    
+    pause()
+
+def menu_data():
+    """Query database"""
+    header("QUERY DATABASE")
+    
+    print(f"{C.BOLD}Quick queries:{C.END}")
+    print(f"  {C.C}1{C.END} - Recent signals")
+    print(f"  {C.C}2{C.END} - Recent trades")
+    print(f"  {C.C}3{C.END} - Open positions")
+    print(f"  {C.C}4{C.END} - Technical features")
+    print(f"  {C.C}5{C.END} - Price data (telemetry)")
+    print(f"  {C.C}c{C.END} - Custom SQL query")
+    print(f"  {C.C}b{C.END} - Back")
+    print()
+    
+    query_map = {
+        '1': 'signals',
+        '2': 'trades',
+        '3': 'positions',
+        '4': 'features',
+        '5': 'telemetry'
+    }
+    
+    choice = input(f"{C.BOLD}Select: {C.END}").strip()
+    
+    if choice == 'b':
+        return
+    elif choice == 'c':
+        print(f"\n{C.Y}Enter SQL query (or press Enter to cancel):{C.END}")
+        sql = input("> ").strip()
+        if sql:
+            os.system(f"./ops-cli data --custom '{sql}' | less")
+    elif choice in query_map:
+        os.system(f"./ops-cli data --query {query_map[choice]} | less")
+    else:
+        print(f"{C.R}Invalid choice{C.END}")
+        time.sleep(1)
+        return
+    
+    pause()
+
+def menu_config():
+    """View configuration"""
+    header("VIEW CONFIGURATION")
+    os.system("./ops-cli config get | less")
+    pause()
+
+def menu_params():
+    """Update parameters"""
+    header("UPDATE PARAMETERS")
+    
+    print(f"{C.BOLD}Available parameters:{C.END}")
+    print(f"  {C.C}1{C.END} - Confidence threshold (current: check with option 4)")
+    print(f"  {C.C}2{C.END} - Volume threshold")
+    print(f"  {C.C}3{C.END} - Max trades per ticker")
+    print(f"  {C.C}b{C.END} - Back")
+    print()
+    
+    param_map = {
+        '1': 'confidence',
+        '2': 'volume',
+        '3': 'max_trades'
+    }
+    
+    choice = input(f"{C.BOLD}Select: {C.END}").strip()
+    
+    if choice == 'b':
+        return
+    
+    if choice not in param_map:
+        print(f"{C.R}Invalid choice{C.END}")
+        time.sleep(1)
+        return
+    
+    param = param_map[choice]
+    value = input(f"{C.Y}Enter new value: {C.END}").strip()
+    
+    if value:
+        os.system(f"./ops-cli config set {param} {value}")
+        time.sleep(2)
+
+def menu_mode():
+    """Trading mode"""
+    header("TRADING MODE")
+    
+    print(f"{C.BOLD}Select mode:{C.END}")
+    print(f"  {C.C}1{C.END} - Options Only (CALL/PUT only)")
+    print(f"  {C.C}2{C.END} - Hybrid (Options + Stocks)")
+    print(f"  {C.C}b{C.END} - Back")
+    print()
+    
+    choice = input(f"{C.BOLD}Select: {C.END}").strip()
+    
+    if choice == '1':
+        os.system("./ops-cli mode options-only")
+        time.sleep(2)
+    elif choice == '2':
+        os.system("./ops-cli mode hybrid")
+        time.sleep(2)
+
+def menu_services():
+    """List services"""
+    header("ECS SERVICES")
+    os.system("./ops-cli services list")
+    pause()
+
+def menu_service_control():
+    """Start/stop services"""
+    header("SERVICE CONTROL")
+    
+    # Show current state
+    print(f"{C.Y}Current services:{C.END}\n")
+    os.system("./ops-cli services list")
+    
+    print(f"\n{C.BOLD}Actions:{C.END}")
+    print(f"  {C.C}start <service>{C.END} - Start a service")
+    print(f"  {C.C}stop <service>{C.END} - Stop a service")
+    print(f"  {C.C}b{C.END} - Back")
+    print()
+    print(f"{C.Y}Example: stop dispatcher{C.END}")
+    print()
+    
+    cmd = input(f"{C.BOLD}Command: {C.END}").strip()
+    
+    if cmd == 'b':
+        return
+    
+    parts = cmd.split()
+    if len(parts) == 2 and parts[0] in ['start', 'stop']:
+        action, service = parts
+        os.system(f"./ops-cli services {action} {service}")
+        time.sleep(2)
+
+def menu_help():
+    """Show help"""
+    header("HELP")
+    
+    print(f"{C.BOLD}Quick reference:{C.END}\n")
+    print(f"{C.G}Monitoring:{C.END}")
+    print("  - System Status: See cluster, services, database health")
+    print("  - View Logs: Real-time or historical logs from any service")
+    print("  - Query Data: Run SQL queries, view trades/signals/positions")
+    print()
+    
+    print(f"{C.Y}Configuration:{C.END}")
+    print("  - View Config: See all current parameters")
+    print("  - Update Params: Change confidence, volume, max trades")
+    print("  - Trading Mode: Switch between options-only and hybrid")
+    print()
+    
+    print(f"{C.M}Services:{C.END}")
+    print("  - List Services: See status of all ECS services")
+    print("  - Start/Stop: Control individual services")
+    print()
+    
+    print(f"{C.B}Tips:{C.END}")
+    print("  - Use Ctrl+C to stop following logs")
+    print("  - Use 'less' commands: Space=next page, q=quit")
+    print("  - Config changes take effect in < 5 minutes")
+    print()
+    
+    print(f"{C.C}Dashboard URL:{C.END}")
+    print("  https://us-west-2.console.aws.amazon.com/cloudwatch/home?region=us-west-2#container-insights:infrastructure/map/ops-pipeline-cluster")
+    print()
+    
+    pause()
+
+#
+# MAIN LOOP
+#
+
+def main():
+    """Main interactive loop"""
+    while True:
+        choice = main_menu()
+        
+        if choice == 'q':
+            clear()
+            print(f"{C.G}Goodbye!{C.END}\n")
+            break
+        elif choice == '1':
+            menu_status()
+        elif choice == '2':
+            menu_logs()
+        elif choice == '3':
+            menu_data()
+        elif choice == '4':
+            menu_config()
+        elif choice == '5':
+            menu_params()
+        elif choice == '6':
+            menu_mode()
+        elif choice == '7':
+            menu_services()
+        elif choice == '8':
+            menu_service_control()
+        elif choice == '9':
+            header("DEPLOY SERVICE")
+            service = input(f"{C.Y}Service name: {C.END}").strip()
+            if service:
+                os.system(f"./ops-cli deploy {service}")
+                pause()
+        elif choice == 'h':
+            menu_help()
+        else:
+            print(f"{C.R}Invalid choice: {choice}{C.END}")
+            time.sleep(1)
+
+if __name__ == '__main__':
+    try:
+        main()
+    except KeyboardInterrupt:
+        clear()
+        print(f"\n{C.Y}Interrupted by user{C.END}\n")
+        sys.exit(0)
