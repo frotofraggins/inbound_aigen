@@ -521,12 +521,16 @@ def get_position_by_symbol(symbol: str) -> Optional[Dict[str, Any]]:
     """
     query = """
     SELECT 
-        id, execution_id, ticker, instrument_type, strategy_type,
+        id, execution_id, execution_uuid, ticker, instrument_type, strategy_type,
         side, quantity, entry_price, entry_time,
         strike_price, expiration_date, option_symbol,
         stop_loss, take_profit, max_hold_minutes,
         bracket_order_accepted, stop_order_id, target_order_id,
         current_price, current_pnl_dollars, current_pnl_percent,
+        entry_features_json, entry_iv_rank, entry_spread_pct,
+        best_unrealized_pnl_pct, worst_unrealized_pnl_pct,
+        best_unrealized_pnl_dollars, worst_unrealized_pnl_dollars,
+        last_mark_price,
         status, created_at
     FROM active_positions
     WHERE (ticker = %s OR option_symbol = %s)
@@ -572,13 +576,29 @@ def create_position_from_alpaca(
         side, quantity, entry_price, entry_time,
         strike_price, expiration_date, option_symbol,
         stop_loss, take_profit, max_hold_minutes,
-        current_price, status, original_quantity
+        current_price, status, original_quantity,
+        entry_features_json,
+        entry_iv_rank,
+        entry_spread_pct,
+        best_unrealized_pnl_pct,
+        worst_unrealized_pnl_pct,
+        best_unrealized_pnl_dollars,
+        worst_unrealized_pnl_dollars,
+        last_mark_price
     ) VALUES (
         %s, %s, %s,
         %s, %s, %s, NOW(),
         %s, %s, %s,
         %s, %s, %s,
-        %s, 'open', %s
+        %s, 'open', %s,
+        %s::jsonb,
+        %s,
+        %s,
+        %s,
+        %s,
+        %s,
+        %s,
+        %s
     )
     RETURNING id
     """
@@ -599,7 +619,15 @@ def create_position_from_alpaca(
                 take_profit,
                 240,  # Default 4 hour hold time
                 current_price,
-                quantity  # original_quantity = quantity
+                quantity,  # original_quantity = quantity
+                json.dumps({}),  # entry_features_json placeholder
+                None,  # entry_iv_rank
+                None,  # entry_spread_pct
+                0.0,   # best_unrealized_pnl_pct
+                0.0,   # worst_unrealized_pnl_pct
+                0.0,   # best_unrealized_pnl_dollars
+                0.0,   # worst_unrealized_pnl_dollars
+                current_price  # last_mark_price
             ))
             result = cur.fetchone()
             if result:
@@ -674,4 +702,215 @@ def get_latest_account_activity_time() -> Optional[datetime]:
                 return row[0] if row else None
     except Exception as e:
         logger.warning(f"Could not fetch latest account activity time: {e}")
+        return None
+
+
+# Phase 3: WebSocket Idempotency
+
+def check_event_processed(event_id: str) -> bool:
+    """
+    Check if a WebSocket event has already been processed.
+    Returns True if event exists in dedupe table.
+    """
+    query = """
+    SELECT 1 FROM alpaca_event_dedupe WHERE event_id = %s
+    """
+    
+    try:
+        with DatabaseConnection() as db:
+            with db.conn.cursor() as cur:
+                cur.execute(query, (event_id,))
+                return cur.fetchone() is not None
+    except Exception as e:
+        logger.warning(f"Could not check event dedupe: {e}")
+        return False
+
+
+def record_event_processed(
+    event_id: str,
+    event_type: str,
+    order_id: str,
+    symbol: str,
+    event_data: Optional[Dict[str, Any]] = None
+) -> bool:
+    """
+    Record that a WebSocket event has been processed.
+    Returns True if successfully recorded, False if already exists.
+    """
+    query = """
+    INSERT INTO alpaca_event_dedupe (
+        event_id, event_type, order_id, symbol, event_data
+    ) VALUES (
+        %s, %s, %s, %s, %s::jsonb
+    )
+    ON CONFLICT (event_id) DO NOTHING
+    """
+    
+    try:
+        with DatabaseConnection() as db:
+            with db.conn.cursor() as cur:
+                cur.execute(query, (
+                    event_id,
+                    event_type,
+                    order_id,
+                    symbol,
+                    json.dumps(event_data or {})
+                ))
+                inserted = cur.rowcount > 0
+                if inserted:
+                    db.conn.commit()
+                return inserted
+    except Exception as e:
+        logger.error(f"Failed to record event dedupe: {e}")
+        return False
+
+
+def get_position_by_order_id(order_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Get an active position by Alpaca order ID.
+    Used to check if we've already created a position for this order.
+    """
+    query = """
+    SELECT 
+        id, execution_id, execution_uuid, ticker, instrument_type, strategy_type,
+        side, quantity, entry_price, entry_time,
+        strike_price, expiration_date, option_symbol,
+        stop_loss, take_profit, max_hold_minutes,
+        alpaca_order_id,
+        status, created_at
+    FROM active_positions
+    WHERE alpaca_order_id = %s
+    ORDER BY entry_time DESC
+    LIMIT 1
+    """
+    
+    try:
+        with DatabaseConnection() as db:
+            with db.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(query, (order_id,))
+                result = cur.fetchone()
+                return dict(result) if result else None
+    except Exception as e:
+        logger.warning(f"Could not fetch position by order_id: {e}")
+        return None
+
+
+def create_position_from_alpaca_with_order_id(
+    ticker: str,
+    instrument_type: str,
+    side: str,
+    quantity: float,
+    entry_price: float,
+    current_price: float,
+    order_id: str,
+    strike_price: Optional[float] = None,
+    expiration_date: Optional[str] = None,
+    stop_loss: Optional[float] = None,
+    take_profit: Optional[float] = None,
+    option_symbol: Optional[str] = None
+) -> Optional[int]:
+    """
+    Create a new active position from Alpaca WebSocket with idempotency.
+    Uses order_id to prevent duplicates.
+    """
+    # Check if position already exists for this order
+    existing = get_position_by_order_id(order_id)
+    if existing:
+        logger.debug(f"Position already exists for order {order_id} (id={existing['id']})")
+        return existing['id']
+    
+    # Also check by symbol to avoid duplicates from different sources
+    symbol_key = option_symbol or ticker
+    existing_by_symbol = get_position_by_symbol(symbol_key)
+    if existing_by_symbol:
+        logger.debug(f"Position for {symbol_key} already exists (id={existing_by_symbol['id']})")
+        # Update with order_id if missing
+        try:
+            with DatabaseConnection() as db:
+                with db.conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE active_positions SET alpaca_order_id = %s WHERE id = %s",
+                        (order_id, existing_by_symbol['id'])
+                    )
+                    db.conn.commit()
+        except Exception as e:
+            logger.warning(f"Could not update order_id: {e}")
+        return existing_by_symbol['id']
+
+    query = """
+    INSERT INTO active_positions (
+        ticker, instrument_type, strategy_type,
+        side, quantity, entry_price, entry_time,
+        strike_price, expiration_date, option_symbol,
+        stop_loss, take_profit, max_hold_minutes,
+        current_price, status, original_quantity,
+        alpaca_order_id,
+        entry_features_json,
+        entry_iv_rank,
+        entry_spread_pct,
+        best_unrealized_pnl_pct,
+        worst_unrealized_pnl_pct,
+        best_unrealized_pnl_dollars,
+        worst_unrealized_pnl_dollars,
+        last_mark_price
+    ) VALUES (
+        %s, %s, %s,
+        %s, %s, %s, NOW(),
+        %s, %s, %s,
+        %s, %s, %s,
+        %s, 'open', %s,
+        %s,
+        %s::jsonb,
+        %s,
+        %s,
+        %s,
+        %s,
+        %s,
+        %s,
+        %s
+    )
+    ON CONFLICT (alpaca_order_id) DO NOTHING
+    RETURNING id
+    """
+    
+    try:
+        with DatabaseConnection() as db:
+            with db.conn.cursor() as cur:
+                cur.execute(query, (
+                    ticker,
+                    instrument_type,
+                    'swing_trade',  # Default strategy for Alpaca-synced positions
+                    side,
+                    quantity,
+                    entry_price,
+                    strike_price,
+                    expiration_date,
+                    option_symbol,
+                    stop_loss,
+                    take_profit,
+                    240,  # Default 4 hour hold time
+                    current_price,
+                    quantity,  # original_quantity = quantity
+                    order_id,
+                    json.dumps({}),  # entry_features_json placeholder
+                    None,  # entry_iv_rank
+                    None,  # entry_spread_pct
+                    0.0,   # best_unrealized_pnl_pct
+                    0.0,   # worst_unrealized_pnl_pct
+                    0.0,   # best_unrealized_pnl_dollars
+                    0.0,   # worst_unrealized_pnl_dollars
+                    current_price  # last_mark_price
+                ))
+                result = cur.fetchone()
+                if result:
+                    position_id = result[0]
+                    db.conn.commit()
+                    logger.info(f"Created position {position_id} from Alpaca WebSocket: {ticker} (order {order_id})")
+                    return position_id
+                else:
+                    # Conflict occurred, fetch existing
+                    existing = get_position_by_order_id(order_id)
+                    return existing['id'] if existing else None
+    except Exception as e:
+        logger.error(f"Failed to create position from Alpaca: {e}")
         return None

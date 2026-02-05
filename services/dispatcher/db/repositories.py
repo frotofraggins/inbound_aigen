@@ -144,7 +144,8 @@ def claim_pending_recommendations(
                 dispatch_recommendations.strategy_type,
                 dispatch_recommendations.confidence,
                 dispatch_recommendations.reason,
-                dispatch_recommendations.ts AS created_at
+                dispatch_recommendations.ts AS created_at,
+                dispatch_recommendations.features_snapshot
         """, (cutoff, limit, run_id))
         
         rows = cur.fetchall()
@@ -259,6 +260,7 @@ def insert_execution(
                     take_profit_price,
                     max_hold_minutes,
                     execution_mode,
+                    account_name,
                     explain_json,
                     risk_json,
                     sim_json,
@@ -274,7 +276,7 @@ def insert_execution(
                     strategy_type
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb,
+                    %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb,
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 RETURNING execution_id
@@ -293,6 +295,7 @@ def insert_execution(
                 execution_data.get('take_profit_price'),
                 execution_data.get('max_hold_minutes'),
                 execution_data.get('execution_mode', 'SIMULATED'),
+                execution_data.get('account_name', 'large-default'),  # MULTI-ACCOUNT
                 json.dumps(execution_data['explain_json']),
                 json.dumps(execution_data['risk_json']),
                 json.dumps(execution_data['sim_json']),
@@ -385,31 +388,37 @@ def check_open_position(conn, ticker: str) -> bool:
         
         return cur.fetchone()[0]
 
-def get_account_state(conn) -> Dict[str, Any]:
+def get_account_state(conn, account_name: str) -> Dict[str, Any]:
     """
     Get account-level state for kill switch gates.
+    
+    Args:
+        conn: Database connection
+        account_name: Account name to filter by (e.g., 'large', 'tiny')
     
     Returns:
         Dict with daily_pnl, active_position_count, total_notional
     """
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        # Get today's P&L from executions
+        # Get today's P&L from executions FOR THIS ACCOUNT
         cur.execute("""
             SELECT COALESCE(SUM(notional), 0) as total_traded_today
             FROM dispatch_executions
             WHERE simulated_ts >= CURRENT_DATE
-        """)
+              AND account_name = %s
+        """, (account_name,))
         result = cur.fetchone()
         total_traded = float(result['total_traded_today']) if result else 0.0
         
-        # Get active position count and total notional
+        # Get active position count and total notional FOR THIS ACCOUNT
         cur.execute("""
             SELECT 
                 COUNT(*) as position_count,
                 COALESCE(SUM(ABS(quantity * entry_price)), 0) as total_notional
             FROM active_positions
             WHERE status IN ('open', 'OPEN')
-        """)
+              AND account_name = %s
+        """, (account_name,))
         result = cur.fetchone()
         
         position_count = int(result['position_count']) if result else 0

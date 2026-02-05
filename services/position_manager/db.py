@@ -49,18 +49,27 @@ class DatabaseConnection:
         self.close()
 
 
-def get_filled_executions_since(since_time: datetime) -> List[Dict[str, Any]]:
+def get_filled_executions_since(since_time: datetime, account_name: str = 'large') -> List[Dict[str, Any]]:
     """
     Get all FILLED executions since a given time that aren't already tracked
     Uses execution_mode to identify real trades (ALPACA_PAPER or LIVE)
+    
+    Args:
+        since_time: Only get executions after this time
+        account_name: Filter by account name (e.g., 'large', 'tiny')
     """
     query = """
     SELECT 
         de.execution_id as id,
+        de.execution_id as execution_uuid,
         de.recommendation_id,
         de.ticker,
         de.instrument_type,
         de.strategy_type,
+        de.option_symbol,
+        de.implied_volatility,
+        de.explain_json,
+        dr.features_snapshot as entry_features_json,
         COALESCE(de.side, 'long') as side,
         de.qty as quantity,
         de.entry_price,
@@ -75,16 +84,19 @@ def get_filled_executions_since(since_time: datetime) -> List[Dict[str, Any]]:
         COALESCE(de.status, 'FILLED') as status,
         COALESCE(de.executed_at, de.simulated_ts) as executed_at
     FROM dispatch_executions de
-    LEFT JOIN active_positions ap ON ap.execution_id = de.execution_id
+    LEFT JOIN dispatch_recommendations dr ON dr.id = de.recommendation_id
+    LEFT JOIN active_positions ap 
+      ON ap.execution_uuid = de.execution_id
     WHERE de.execution_mode IN ('ALPACA_PAPER', 'LIVE')
       AND de.simulated_ts >= %s
+      AND de.account_name = %s
       AND ap.id IS NULL  -- Not already tracked
     ORDER BY de.simulated_ts DESC
     """
     
     with DatabaseConnection() as db:
         with db.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(query, (since_time,))
+            cur.execute(query, (since_time, account_name))
             results = cur.fetchall()
             return [dict(row) for row in results]
 
@@ -93,21 +105,47 @@ def create_active_position(execution: Dict[str, Any]) -> int:
     """
     Create a new active position from an execution
     """
+    explain = execution.get('explain_json') or {}
+    entry_spread_pct = None
+    try:
+        bid = float(explain.get('api_bid', 0) or 0)
+        ask = float(explain.get('api_ask', 0) or 0)
+        if bid > 0 and ask > 0:
+            mid = (bid + ask) / 2
+            entry_spread_pct = ((ask - bid) / mid) * 100
+    except Exception:
+        entry_spread_pct = None
+
     query = """
     INSERT INTO active_positions (
-        execution_id, ticker, instrument_type, strategy_type,
+        execution_id, execution_uuid, ticker, instrument_type, strategy_type,
         side, quantity, entry_price, entry_time,
         strike_price, expiration_date,
         stop_loss, take_profit, max_hold_minutes,
         bracket_order_accepted, stop_order_id, target_order_id,
-        current_price, status
+        current_price, status,
+        option_symbol,
+        entry_features_json,
+        entry_iv_rank,
+        entry_spread_pct,
+        best_unrealized_pnl_pct,
+        worst_unrealized_pnl_pct,
+        best_unrealized_pnl_dollars,
+        worst_unrealized_pnl_dollars,
+        last_mark_price
     ) VALUES (
-        %s, %s, %s, %s,
+        %s, %s, %s, %s, %s,
         %s, %s, %s, %s,
         %s, %s,
         %s, %s, %s,
         %s, %s, %s,
-        %s, 'open'
+        %s, 'open',
+        %s,
+        %s::jsonb,
+        %s,
+        %s,
+        %s, %s, %s, %s,
+        %s
     )
     RETURNING id
     """
@@ -116,6 +154,7 @@ def create_active_position(execution: Dict[str, Any]) -> int:
         with db.conn.cursor() as cur:
             cur.execute(query, (
                 execution['id'],
+                execution.get('execution_uuid') or execution['id'],
                 execution['ticker'],
                 execution['instrument_type'],
                 execution['strategy_type'],
@@ -131,7 +170,16 @@ def create_active_position(execution: Dict[str, Any]) -> int:
                 bool(execution.get('stop_order_id') and execution.get('target_order_id')),
                 execution.get('stop_order_id'),
                 execution.get('target_order_id'),
-                execution['entry_price']  # Initial current_price = entry_price
+                execution['entry_price'],  # Initial current_price = entry_price
+                execution.get('option_symbol'),
+                json.dumps(execution.get('entry_features_json') or {}),
+                execution.get('entry_iv_rank'),
+                entry_spread_pct,
+                0.0,  # best_unrealized_pnl_pct
+                0.0,  # worst_unrealized_pnl_pct
+                0.0,  # best_unrealized_pnl_dollars
+                0.0,  # worst_unrealized_pnl_dollars
+                execution['entry_price']  # last_mark_price
             ))
             position_id = cur.fetchone()[0]
             db.conn.commit()
@@ -145,12 +193,16 @@ def get_open_positions() -> List[Dict[str, Any]]:
     """
     query = """
     SELECT 
-        id, execution_id, ticker, instrument_type, strategy_type,
+        id, execution_id, execution_uuid, ticker, instrument_type, strategy_type,
         side, quantity, entry_price, entry_time,
         strike_price, expiration_date,
         stop_loss, take_profit, max_hold_minutes,
         bracket_order_accepted, stop_order_id, target_order_id,
         current_price, current_pnl_dollars, current_pnl_percent,
+        entry_features_json, entry_iv_rank, entry_spread_pct,
+        best_unrealized_pnl_pct, worst_unrealized_pnl_pct,
+        best_unrealized_pnl_dollars, worst_unrealized_pnl_dollars,
+        last_mark_price, option_symbol,
         last_checked_at, check_count,
         status, created_at
     FROM active_positions
@@ -169,7 +221,12 @@ def update_position_price(
     position_id: int,
     current_price: float,
     pnl_dollars: float,
-    pnl_percent: float
+    pnl_percent: float,
+    best_unrealized_pnl_pct: Optional[float] = None,
+    worst_unrealized_pnl_pct: Optional[float] = None,
+    best_unrealized_pnl_dollars: Optional[float] = None,
+    worst_unrealized_pnl_dollars: Optional[float] = None,
+    last_mark_price: Optional[float] = None
 ) -> None:
     """
     Update position with current price and P&L
@@ -179,6 +236,11 @@ def update_position_price(
     SET current_price = %s,
         current_pnl_dollars = %s,
         current_pnl_percent = %s,
+        best_unrealized_pnl_pct = COALESCE(%s, best_unrealized_pnl_pct),
+        worst_unrealized_pnl_pct = COALESCE(%s, worst_unrealized_pnl_pct),
+        best_unrealized_pnl_dollars = COALESCE(%s, best_unrealized_pnl_dollars),
+        worst_unrealized_pnl_dollars = COALESCE(%s, worst_unrealized_pnl_dollars),
+        last_mark_price = COALESCE(%s, last_mark_price),
         last_checked_at = NOW(),
         check_count = check_count + 1,
         updated_at = NOW()
@@ -187,7 +249,72 @@ def update_position_price(
     
     with DatabaseConnection() as db:
         with db.conn.cursor() as cur:
-            cur.execute(query, (current_price, pnl_dollars, pnl_percent, position_id))
+            cur.execute(query, (
+                current_price,
+                pnl_dollars,
+                pnl_percent,
+                best_unrealized_pnl_pct,
+                worst_unrealized_pnl_pct,
+                best_unrealized_pnl_dollars,
+                worst_unrealized_pnl_dollars,
+                last_mark_price,
+                position_id
+            ))
+            db.conn.commit()
+
+
+def insert_position_history(row: Dict[str, Any]) -> None:
+    """
+    Insert a closed position outcome into position_history.
+    Fixed 2026-02-05: Removed position_id (doesn't exist in schema)
+    """
+    query = """
+    INSERT INTO position_history (
+        execution_id, execution_uuid, ticker, instrument_type,
+        strategy_type, side, quantity, multiplier,
+        entry_time, exit_time, entry_price, exit_price,
+        pnl_dollars, pnl_pct, holding_seconds,
+        best_unrealized_pnl_pct, worst_unrealized_pnl_pct,
+        best_unrealized_pnl_dollars, worst_unrealized_pnl_dollars,
+        entry_iv_rank, entry_spread_pct,
+        entry_features_json, exit_reason
+    ) VALUES (
+        %s, %s, %s, %s,
+        %s, %s, %s, %s,
+        %s, %s, %s, %s,
+        %s, %s, %s,
+        %s, %s, %s, %s,
+        %s, %s,
+        %s::jsonb, %s
+    )
+    """
+    with DatabaseConnection() as db:
+        with db.conn.cursor() as cur:
+            cur.execute(query, (
+                row.get('execution_id'),
+                row.get('execution_uuid'),
+                row.get('ticker'),
+                row.get('instrument_type') or row.get('asset_type'),  # Map asset_type to instrument_type
+                row.get('strategy_type'),
+                row.get('side_label') or row.get('side'),  # Use side_label from exits.py
+                row.get('qty'),
+                row.get('multiplier'),
+                row.get('entry_ts'),
+                row.get('exit_ts'),
+                row.get('entry_price'),
+                row.get('exit_price'),
+                row.get('pnl_dollars'),
+                row.get('pnl_pct'),
+                row.get('holding_seconds'),
+                row.get('best_pnl_pct'),  # MFE = best unrealized
+                row.get('worst_pnl_pct'),  # MAE = worst unrealized
+                row.get('best_pnl_dollars'),
+                row.get('worst_pnl_dollars'),
+                row.get('iv_rank_at_entry'),
+                row.get('spread_at_entry_pct'),
+                json.dumps(row.get('entry_features_json') or {}),
+                row.get('exit_reason')
+            ))
             db.conn.commit()
 
 
@@ -531,12 +658,16 @@ def get_position_by_symbol(symbol: str) -> Optional[Dict[str, Any]]:
     """
     query = """
     SELECT 
-        id, execution_id, ticker, instrument_type, strategy_type,
+        id, execution_id, execution_uuid, ticker, instrument_type, strategy_type,
         side, quantity, entry_price, entry_time,
         strike_price, expiration_date, option_symbol,
         stop_loss, take_profit, max_hold_minutes,
         bracket_order_accepted, stop_order_id, target_order_id,
         current_price, current_pnl_dollars, current_pnl_percent,
+        entry_features_json, entry_iv_rank, entry_spread_pct,
+        best_unrealized_pnl_pct, worst_unrealized_pnl_pct,
+        best_unrealized_pnl_dollars, worst_unrealized_pnl_dollars,
+        last_mark_price,
         status, created_at
     FROM active_positions
     WHERE (ticker = %s OR option_symbol = %s)
@@ -575,15 +706,30 @@ def create_position_from_alpaca(
         side, quantity, entry_price, entry_time,
         strike_price, expiration_date, option_symbol,
         stop_loss, take_profit, max_hold_minutes,
-        current_price, status, original_quantity
+        current_price, status,
+        entry_features_json,
+        entry_iv_rank,
+        entry_spread_pct,
+        best_unrealized_pnl_pct,
+        worst_unrealized_pnl_pct,
+        best_unrealized_pnl_dollars,
+        worst_unrealized_pnl_dollars,
+        last_mark_price
     ) VALUES (
         %s, %s, %s,
         %s, %s, %s, NOW(),
         %s, %s, %s,
         %s, %s, %s,
-        %s, 'open', %s
+        %s, 'open',
+        %s::jsonb,
+        %s,
+        %s,
+        %s,
+        %s,
+        %s,
+        %s,
+        %s
     )
-    ON CONFLICT (ticker, entry_time) DO NOTHING
     RETURNING id
     """
     
@@ -603,7 +749,14 @@ def create_position_from_alpaca(
                 take_profit,
                 240,  # Default 4 hour hold time
                 current_price,
-                quantity  # original_quantity = quantity
+                json.dumps({}),  # entry_features_json placeholder
+                None,  # entry_iv_rank
+                None,  # entry_spread_pct
+                0.0,   # best_unrealized_pnl_pct
+                0.0,   # worst_unrealized_pnl_pct
+                0.0,   # best_unrealized_pnl_dollars
+                0.0,   # worst_unrealized_pnl_dollars
+                current_price  # last_mark_price
             ))
             result = cur.fetchone()
             if result:

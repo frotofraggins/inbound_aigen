@@ -1,0 +1,35 @@
+{
+  "family": "position-manager-tiny-service",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::160027201036:role/ops-pipeline-ecs-task-role",
+  "taskRoleArn": "arn:aws:iam::160027201036:role/ops-pipeline-ecs-task-role",
+  "containerDefinitions": [
+    {
+      "name": "position-manager-tiny",
+      "image": "160027201036.dkr.ecr.us-west-2.amazonaws.com/ops-pipeline/position-manager:latest",
+      "essential": true,
+      "environment": [
+        {
+          "name": "RUN_MODE",
+          "value": "LOOP"
+        },
+        {
+          "name": "ACCOUNT_NAME",
+          "value": "tiny"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/ops-pipeline/position-manager-tiny",
+          "awslogs-region": "us-west-2",
+          "awslogs-stream-prefix": "position-manager-tiny",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

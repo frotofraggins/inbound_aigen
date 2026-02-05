@@ -51,6 +51,11 @@ ALPACA_API_KEY = _config['alpaca_api_key']
 ALPACA_API_SECRET = _config['alpaca_api_secret']
 ALPACA_BASE_URL = _config['alpaca_base_url']
 
+# Account Configuration
+# This determines which account's positions this Position Manager instance tracks
+# Set via environment variable ACCOUNT_NAME (defaults to 'large')
+ACCOUNT_NAME = os.getenv('ACCOUNT_NAME', 'large')
+
 # Exit rules
 DAY_TRADE_CLOSE_TIME = time(15, 55)  # 3:55 PM ET
 OPTIONS_EXPIRY_WARNING_HOURS = 24

@@ -84,7 +84,7 @@ class TickerDiscovery:
                 MAX(volume_ratio) as max_volume_ratio,
                 AVG(volume_ratio) as avg_volume_ratio,
                 COUNT(*) as surge_count
-            FROM lane_features
+            FROM lane_features_clean
             WHERE 
                 ts > NOW() - INTERVAL '24 hours'
                 AND volume_ratio > 2.0
@@ -102,7 +102,7 @@ class TickerDiscovery:
                 MAX(close) as high_price,
                 MIN(close) as low_price,
                 AVG(volume_ratio) as avg_volume
-            FROM lane_features
+            FROM lane_features_clean
             WHERE ts > NOW() - INTERVAL '7 days'
             GROUP BY ticker
             ORDER BY bar_count DESC
@@ -336,16 +336,21 @@ JSON Array Response:"""
     
     def update_ssm_parameter(self, recommendations: List[Dict]):
         """
-        Update SSM parameter with top 25-30 tickers.
+        Update SSM parameters with top 25-30 tickers.
         Other services will auto-pickup changes.
+        
+        Updates BOTH:
+        - /ops-pipeline/tickers (used by telemetry service)
+        - /ops-pipeline/universe_tickers (used by watchlist engine)
         """
         # Sort by confidence, take top 28
         sorted_recs = sorted(recommendations, key=lambda x: x['confidence'], reverse=True)
         top_tickers = [r['ticker'] for r in sorted_recs[:28]]
         
-        # Update SSM parameter
+        # Update SSM parameters
         ticker_list = ','.join(top_tickers)
         
+        # Update telemetry ticker list
         self.ssm.put_parameter(
             Name='/ops-pipeline/tickers',
             Value=ticker_list,
@@ -353,7 +358,15 @@ JSON Array Response:"""
             Type='String'
         )
         
-        print(f"Updated SSM parameter with {len(top_tickers)} tickers: {ticker_list}")
+        # Update watchlist universe ticker list (MUST match telemetry list)
+        self.ssm.put_parameter(
+            Name='/ops-pipeline/universe_tickers',
+            Value=ticker_list,
+            Overwrite=True,
+            Type='String'
+        )
+        
+        print(f"Updated SSM parameters with {len(top_tickers)} tickers: {ticker_list}")
         
         return top_tickers
     

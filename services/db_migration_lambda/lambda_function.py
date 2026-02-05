@@ -870,6 +870,272 @@ CREATE INDEX IF NOT EXISTS idx_account_activities_transaction_time
     ON account_activities(transaction_time DESC);
 
 INSERT INTO schema_migrations (version) VALUES ('018_add_account_activities') ON CONFLICT (version) DO NOTHING;
+""",
+    '2026_02_02_0001_position_telemetry': """
+-- Migration: 2026_02_02_0001_position_telemetry
+-- Adds execution_uuid bridge + entry telemetry + position_history
+-- No behavior changes; schema only.
+
+ALTER TABLE IF EXISTS active_positions
+  ADD COLUMN IF NOT EXISTS execution_uuid UUID;
+
+ALTER TABLE IF EXISTS active_positions
+  ADD COLUMN IF NOT EXISTS entry_features_json JSONB;
+
+ALTER TABLE IF EXISTS active_positions
+  ADD COLUMN IF NOT EXISTS entry_iv_rank NUMERIC(18,8);
+
+ALTER TABLE IF EXISTS active_positions
+  ADD COLUMN IF NOT EXISTS entry_spread_pct NUMERIC(18,8);
+
+ALTER TABLE IF EXISTS active_positions
+  ADD COLUMN IF NOT EXISTS best_unrealized_pnl_pct NUMERIC(18,8);
+
+ALTER TABLE IF EXISTS active_positions
+  ADD COLUMN IF NOT EXISTS worst_unrealized_pnl_pct NUMERIC(18,8);
+
+ALTER TABLE IF EXISTS active_positions
+  ADD COLUMN IF NOT EXISTS best_unrealized_pnl_dollars NUMERIC(18,8);
+
+ALTER TABLE IF EXISTS active_positions
+  ADD COLUMN IF NOT EXISTS worst_unrealized_pnl_dollars NUMERIC(18,8);
+
+ALTER TABLE IF EXISTS active_positions
+  ADD COLUMN IF NOT EXISTS last_mark_price NUMERIC(18,8);
+
+ALTER TABLE IF EXISTS active_positions
+  ADD COLUMN IF NOT EXISTS strategy_type TEXT;
+
+ALTER TABLE IF EXISTS active_positions
+  ADD COLUMN IF NOT EXISTS side TEXT;
+
+ALTER TABLE IF EXISTS active_positions
+  ADD COLUMN IF NOT EXISTS status TEXT;
+
+ALTER TABLE IF EXISTS active_positions
+  ALTER COLUMN best_unrealized_pnl_pct SET DEFAULT 0;
+
+ALTER TABLE IF EXISTS active_positions
+  ALTER COLUMN worst_unrealized_pnl_pct SET DEFAULT 0;
+
+ALTER TABLE IF EXISTS active_positions
+  ALTER COLUMN best_unrealized_pnl_dollars SET DEFAULT 0;
+
+ALTER TABLE IF EXISTS active_positions
+  ALTER COLUMN worst_unrealized_pnl_dollars SET DEFAULT 0;
+
+CREATE INDEX IF NOT EXISTS idx_active_positions_execution_uuid
+  ON active_positions (execution_uuid);
+
+CREATE TABLE IF NOT EXISTS position_history (
+  id BIGSERIAL PRIMARY KEY,
+  execution_id UUID,
+  execution_uuid UUID,
+  ticker TEXT,
+  instrument_type TEXT,
+  strategy_type TEXT,
+  side TEXT,
+  quantity NUMERIC(18,8),
+  entry_price NUMERIC(18,8),
+  exit_price NUMERIC(18,8),
+  entry_time TIMESTAMPTZ,
+  exit_time TIMESTAMPTZ,
+  pnl_dollars NUMERIC(18,8),
+  pnl_pct NUMERIC(18,8),
+  strike_price NUMERIC(18,8),
+  expiration_date DATE,
+  option_symbol TEXT,
+  implied_volatility NUMERIC(18,8),
+  max_hold_minutes INTEGER,
+  holding_seconds INTEGER,
+  multiplier INTEGER,
+  exit_reason TEXT,
+  exit_order_id TEXT,
+  entry_features_json JSONB,
+  entry_iv_rank NUMERIC(18,8),
+  entry_spread_pct NUMERIC(18,8),
+  best_unrealized_pnl_pct NUMERIC(18,8),
+  worst_unrealized_pnl_pct NUMERIC(18,8),
+  best_unrealized_pnl_dollars NUMERIC(18,8),
+  worst_unrealized_pnl_dollars NUMERIC(18,8),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_position_history_execution_uuid
+  ON position_history (execution_uuid);
+
+CREATE INDEX IF NOT EXISTS idx_position_history_ticker_exit_time
+  ON position_history (ticker, exit_time DESC);
+
+INSERT INTO schema_migrations (version) VALUES ('2026_02_02_0001_position_telemetry') ON CONFLICT (version) DO NOTHING;
+""",
+    '2026_02_02_0002_websocket_idempotency': """
+-- Migration: 2026_02_02_0002_websocket_idempotency
+-- Adds WebSocket event deduplication and order tracking
+-- Prevents duplicate position creation from WebSocket reconnects/retries
+
+-- Event deduplication table
+CREATE TABLE IF NOT EXISTS alpaca_event_dedupe (
+    event_id VARCHAR(255) PRIMARY KEY,
+    event_type VARCHAR(50) NOT NULL,
+    order_id VARCHAR(100),
+    symbol VARCHAR(20),
+    event_data JSONB,
+    processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_alpaca_event_dedupe_order_id 
+ON alpaca_event_dedupe(order_id) 
+WHERE order_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_alpaca_event_dedupe_processed_at 
+ON alpaca_event_dedupe(processed_at DESC);
+
+COMMENT ON TABLE alpaca_event_dedupe IS 'Tracks processed WebSocket events to prevent duplicate position creation';
+
+-- Add order tracking to active_positions
+ALTER TABLE active_positions 
+ADD COLUMN IF NOT EXISTS alpaca_order_id VARCHAR(100);
+
+CREATE INDEX IF NOT EXISTS idx_active_positions_alpaca_order_id 
+ON active_positions(alpaca_order_id) 
+WHERE alpaca_order_id IS NOT NULL;
+
+-- Partial unique index on execution_uuid (only for non-null values)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_active_positions_execution_uuid_unique 
+ON active_positions(execution_uuid) 
+WHERE execution_uuid IS NOT NULL;
+
+COMMENT ON COLUMN active_positions.alpaca_order_id IS 'Alpaca order ID for idempotency checking';
+
+INSERT INTO schema_migrations (version) VALUES ('2026_02_02_0002_websocket_idempotency') ON CONFLICT (version) DO NOTHING;
+""",
+    '2026_02_02_0003_add_constraints_no_do': """
+-- Migration: 2026_02_02_0003_add_constraints_no_do
+-- Re-adds constraints that were removed when DO blocks were stripped
+-- Idempotent: checks if constraint exists before adding
+
+-- Check and add constraint for active_positions.side
+-- Includes: long, short, call, put (for options)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_active_positions_side'
+    ) THEN
+        ALTER TABLE active_positions 
+        ADD CONSTRAINT chk_active_positions_side 
+        CHECK (side IN ('long', 'short', 'call', 'put'))
+        NOT VALID;
+    END IF;
+END $$;
+
+-- Check and add constraint for active_positions.strategy_type
+-- Includes: day_trade, swing_trade, conservative (NULL allowed for stocks)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_active_positions_strategy_type'
+    ) THEN
+        ALTER TABLE active_positions 
+        ADD CONSTRAINT chk_active_positions_strategy_type 
+        CHECK (strategy_type IN ('day_trade', 'swing_trade', 'conservative') OR strategy_type IS NULL)
+        NOT VALID;
+    END IF;
+END $$;
+
+-- Check and add constraint for position_history.side
+-- Includes: long, short, call, put (for options)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_position_history_side'
+    ) THEN
+        ALTER TABLE position_history 
+        ADD CONSTRAINT chk_position_history_side 
+        CHECK (side IN ('long', 'short', 'call', 'put'))
+        NOT VALID;
+    END IF;
+END $$;
+
+-- Check and add constraint for position_history.strategy_type
+-- Includes: day_trade, swing_trade, conservative (NULL allowed for stocks)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_position_history_strategy_type'
+    ) THEN
+        ALTER TABLE position_history 
+        ADD CONSTRAINT chk_position_history_strategy_type 
+        CHECK (strategy_type IN ('day_trade', 'swing_trade', 'conservative') OR strategy_type IS NULL)
+        NOT VALID;
+    END IF;
+END $$;
+
+-- Record migration
+INSERT INTO schema_migrations (version) VALUES ('2026_02_02_0003_add_constraints_no_do') ON CONFLICT (version) DO NOTHING;
+""",
+    '999_cleanup_phantom_positions_v2': """
+-- Migration 999: One-time cleanup of ALL phantom positions
+-- These positions don't exist in Alpaca but are still open in database
+-- Identified by sync script on 2026-02-03
+-- Updated to include IDs 34, 35 from tiny account
+
+DELETE FROM schema_migrations WHERE version = '999_cleanup_phantom_positions';
+
+UPDATE active_positions
+SET 
+    status = 'closed',
+    close_reason = 'manual_reconciliation',
+    closed_at = NOW(),
+    current_pnl_dollars = 0,
+    current_pnl_percent = 0
+WHERE id IN (21, 16, 19, 24, 13, 37, 36, 34, 35)
+AND status IN ('open', 'closing');
+
+INSERT INTO schema_migrations (version) VALUES ('999_cleanup_phantom_positions_v2') ON CONFLICT (version) DO NOTHING;
+""",
+    '1000_add_account_name_column': """
+-- Migration 1000: Add account_name column to dispatch_executions
+-- Required for Position Manager account filtering to prevent duplicate position creation
+-- Date: 2026-02-03
+
+ALTER TABLE dispatch_executions 
+ADD COLUMN IF NOT EXISTS account_name VARCHAR(50) DEFAULT 'large';
+
+-- Set existing records to 'large' (the default account)
+UPDATE dispatch_executions 
+SET account_name = 'large' 
+WHERE account_name IS NULL;
+
+-- Add index for performance
+CREATE INDEX IF NOT EXISTS idx_dispatch_executions_account_name 
+ON dispatch_executions(account_name);
+
+INSERT INTO schema_migrations (version) VALUES ('1000_add_account_name_column') ON CONFLICT (version) DO NOTHING;
+""",
+    '1001_add_account_name_to_active_positions': """
+-- Migration 1001: Add account_name column to active_positions table
+-- Date: 2026-02-03
+-- Purpose: Enable per-account position tracking for multi-account support
+
+-- Add account_name column with default value
+ALTER TABLE active_positions 
+ADD COLUMN IF NOT EXISTS account_name VARCHAR(50) DEFAULT 'large';
+
+-- Create index for efficient filtering by account
+CREATE INDEX IF NOT EXISTS idx_active_positions_account_name 
+ON active_positions(account_name);
+
+-- Create composite index for common query pattern (status + account)
+CREATE INDEX IF NOT EXISTS idx_active_positions_status_account 
+ON active_positions(status, account_name);
+
+-- Update existing rows to have account_name (if any exist without it)
+UPDATE active_positions 
+SET account_name = 'large' 
+WHERE account_name IS NULL;
+
+INSERT INTO schema_migrations (version) VALUES ('1001_add_account_name_to_active_positions') ON CONFLICT (version) DO NOTHING;
 """
 }
 

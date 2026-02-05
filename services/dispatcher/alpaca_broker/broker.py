@@ -14,6 +14,9 @@ from datetime import datetime, timezone
 import sys
 import os
 
+# Alpaca SDK imports
+from alpaca.trading.enums import PositionIntent
+
 # Add parent directory to path for options module
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from options import (
@@ -73,10 +76,24 @@ class AlpacaPaperBroker:
             raise Exception(f"Alpaca connection failed: {response.text}")
         
         account = response.json()
+        
+        # Get account tier configuration for logging
+        account_name = self.config.get('account_name', 'unknown')
+        account_tier = self.config.get('account_tier', 'unknown')
+        tier_config = self.config.get('account_tier_config', {})
+        
         print(f"Connected to Alpaca Paper Trading")
-        print(f"  Account: {account['account_number']}")
+        print(f"  Account Name: {account_name}")
+        print(f"  Account Tier: {account_tier}")
+        print(f"  Account Number: {account['account_number']}")
         print(f"  Buying power: ${float(account['buying_power']):.2f}")
         print(f"  Cash: ${float(account['cash']):.2f}")
+        print(f"  Risk Limits:")
+        print(f"    - Max contracts: {tier_config.get('max_contracts', 'N/A')}")
+        print(f"    - Risk % (day): {tier_config.get('risk_pct_day', 0) * 100:.1f}%")
+        print(f"    - Risk % (swing): {tier_config.get('risk_pct_swing', 0) * 100:.1f}%")
+        print(f"    - Min confidence: {tier_config.get('min_confidence', 'N/A')}")
+        print(f"    - Min volume ratio: {tier_config.get('min_volume_ratio', 'N/A')}x")
     
     def execute(
         self,
@@ -115,18 +132,22 @@ class AlpacaPaperBroker:
         explain_json = kwargs.get('explain_json', {})
         risk_json = kwargs.get('risk_json', {})
         
+        # CRITICAL FIX 2026-02-05: Extract features_snapshot for learning
+        # This captures market conditions at entry time
+        features_snapshot = recommendation.get('features_snapshot', {})
+        
         # Route to appropriate execution method
         if instrument_type in ('CALL', 'PUT'):
             return self._execute_option(
                 recommendation, run_id, entry_price, fill_model,
                 slippage_bps, qty, notional, stop_loss, take_profit,
-                max_hold_minutes, explain_json, risk_json, side
+                max_hold_minutes, explain_json, risk_json, side, features_snapshot
             )
         else:
             return self._execute_stock(
                 recommendation, run_id, entry_price, fill_model,
                 slippage_bps, qty, notional, stop_loss, take_profit,
-                max_hold_minutes, explain_json, risk_json, side, ticker
+                max_hold_minutes, explain_json, risk_json, side, ticker, features_snapshot
             )
     
     def _execute_stock(
@@ -144,13 +165,24 @@ class AlpacaPaperBroker:
         explain_json: Dict[str, Any],
         risk_json: Dict[str, Any],
         side: str,
-        ticker: str
+        ticker: str,
+        features_snapshot: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
         Execute stock trade on Alpaca.
         
         Existing stock trading logic (unchanged from before).
         """
+        
+        # Extract action from recommendation
+        action = recommendation['action']
+        
+        # Round prices to 2 decimal places (Alpaca rejects sub-penny prices)
+        entry_price = round(entry_price, 2)
+        if stop_loss:
+            stop_loss = round(stop_loss, 2)
+        if take_profit:
+            take_profit = round(take_profit, 2)
         
         # Prepare order
         order_data = {
@@ -161,14 +193,11 @@ class AlpacaPaperBroker:
             "time_in_force": "day"
         }
         
-        # Add bracket orders if stop/target specified
-        if stop_loss and take_profit:
-            order_data["order_class"] = "bracket"
-            order_data["stop_loss"] = {"stop_price": str(stop_loss)}
-            order_data["take_profit"] = {"limit_price": str(take_profit)}
-        elif stop_loss:
-            order_data["order_class"] = "oto"  # One-triggers-other
-            order_data["stop_loss"] = {"stop_price": str(stop_loss)}
+        # CRITICAL FIX 2026-02-04: Don't set bracket orders on Alpaca
+        # Let our position manager handle all exits with proper timing and logic
+        # Alpaca brackets were closing positions in 4 min before position manager could monitor (checks every 5 min, now 1 min)
+        order_data["order_class"] = "simple"
+        # Store stop/profit in database only - position manager will enforce them
         
         # Submit order to Alpaca
         headers = {
@@ -191,7 +220,8 @@ class AlpacaPaperBroker:
                     recommendation, run_id, entry_price, fill_model,
                     slippage_bps, qty, notional, stop_loss, take_profit,
                     max_hold_minutes, explain_json, risk_json,
-                    reason=f"Alpaca rejected: {response.text[:100]}"
+                    reason=f"Alpaca rejected: {response.text[:100]}",
+                    features_snapshot=features_snapshot
                 )
             
             order = response.json()
@@ -229,6 +259,7 @@ class AlpacaPaperBroker:
                 'take_profit_price': take_profit,
                 'max_hold_minutes': max_hold_minutes,
                 'execution_mode': 'ALPACA_PAPER',
+                'account_name': self.config.get('account_name', 'large-default'),  # MULTI-ACCOUNT
                 'explain_json': {
                     **explain_json,
                     'alpaca_order_id': order_id,
@@ -245,7 +276,9 @@ class AlpacaPaperBroker:
                     'filled_at': order_status.get('filled_at'),
                     'filled_qty': filled_qty,
                     'filled_avg_price': filled_avg_price
-                }
+                },
+                # CRITICAL: Pass features for learning
+                'entry_features_json': features_snapshot
             }
             
         except Exception as e:
@@ -254,7 +287,8 @@ class AlpacaPaperBroker:
                 recommendation, run_id, entry_price, fill_model,
                 slippage_bps, qty, notional, stop_loss, take_profit,
                 max_hold_minutes, explain_json, risk_json,
-                reason=f"Alpaca stock error: {str(e)}"
+                reason=f"Alpaca stock error: {str(e)}",
+                features_snapshot=features_snapshot
             )
     
     def _execute_option(
@@ -271,7 +305,8 @@ class AlpacaPaperBroker:
         max_hold_minutes: Optional[int],
         explain_json: Dict[str, Any],
         risk_json: Dict[str, Any],
-        side: str
+        side: str,
+        features_snapshot: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
         Execute options trade on Alpaca.
@@ -320,7 +355,8 @@ class AlpacaPaperBroker:
                     recommendation, run_id, entry_price, fill_model,
                     slippage_bps, qty, notional, stop_loss, take_profit,
                     max_hold_minutes, explain_json, risk_json,
-                    reason="No suitable option contract found via Alpaca API"
+                    reason="No suitable option contract found via Alpaca API",
+                    features_snapshot=features_snapshot
                 )
             
             # Extract contract details from real API response
@@ -329,7 +365,7 @@ class AlpacaPaperBroker:
             option_symbol = best_contract['symbol']
 
             # PHASE 3-4: Validate IV Rank before trading
-            from alpaca.options import validate_iv_rank
+            from options import validate_iv_rank
             from db.iv_history import IVHistoryDB
 
             iv_db = IVHistoryDB(self.config)
@@ -341,7 +377,8 @@ class AlpacaPaperBroker:
                     recommendation, run_id, entry_price, fill_model,
                     slippage_bps, qty, notional, stop_loss, take_profit,
                     max_hold_minutes, explain_json, risk_json,
-                    reason=f"IV validation failed: {iv_reason}"
+                    reason=f"IV validation failed: {iv_reason}",
+                    features_snapshot=features_snapshot
                 )
             
             print(f"✓ IV validation passed: {iv_reason}")
@@ -356,11 +393,12 @@ class AlpacaPaperBroker:
                     recommendation, run_id, entry_price, fill_model,
                     slippage_bps, qty, notional, stop_loss, take_profit,
                     max_hold_minutes, explain_json, risk_json,
-                    reason=f"Invalid option price from API: ${option_price}"
+                    reason=f"Invalid option price from API: ${option_price}",
+                    features_snapshot=features_snapshot
                 )
 
             # PHASE 4: Calculate position size with Kelly Criterion (if enough history)
-            from alpaca.options import calculate_kelly_criterion_size
+            from options import calculate_kelly_criterion_size
 
             # Get historical stats for Kelly (optional; skip if module unavailable in this container)
             stats = {"total_trades": 0, "win_rate": 0.0, "avg_win": 0.0, "avg_loss": 0.0}
@@ -412,8 +450,19 @@ class AlpacaPaperBroker:
                     recommendation, run_id, entry_price, fill_model,
                     slippage_bps, qty, notional, stop_loss, take_profit,
                     max_hold_minutes, explain_json, risk_json,
-                    reason=f"Insufficient buying power: ${buying_power:.2f}, need ${option_price * 100:.2f}"
+                    reason=f"Insufficient buying power: ${buying_power:.2f}, need ${option_price * 100:.2f}",
+                    features_snapshot=features_snapshot
                 )
+            
+            # Determine position intent (dispatcher only OPENS positions, never closes)
+            # CRITICAL: Must specify position_intent for options to avoid unintended positions
+            
+            if recommendation['action'] == 'BUY':
+                position_intent = PositionIntent.BUY_TO_OPEN  # Opening long position
+            elif recommendation['action'] == 'SELL':
+                position_intent = PositionIntent.SELL_TO_OPEN  # Opening short position
+            else:
+                raise ValueError(f"Invalid action: {recommendation['action']}")
             
             # Prepare option order
             order_data = {
@@ -422,7 +471,8 @@ class AlpacaPaperBroker:
                 "side": side,
                 "type": "market",
                 "time_in_force": "day",
-                "order_class": "simple"  # Options don't support bracket orders in same way
+                "order_class": "simple",  # Options don't support bracket orders in same way
+                "position_intent": position_intent.value  # CRITICAL: Specify we're opening, not closing
             }
             
             # Submit order to Alpaca
@@ -444,7 +494,8 @@ class AlpacaPaperBroker:
                     recommendation, run_id, entry_price, fill_model,
                     slippage_bps, qty, notional, stop_loss, take_profit,
                     max_hold_minutes, explain_json, risk_json,
-                    reason=f"Alpaca rejected option order: {response.text[:100]}"
+                    reason=f"Alpaca rejected option order: {response.text[:100]}",
+                    features_snapshot=features_snapshot
                 )
             
             order = response.json()
@@ -490,6 +541,7 @@ class AlpacaPaperBroker:
                 'take_profit_price': take_profit,
                 'max_hold_minutes': max_hold_minutes,
                 'execution_mode': 'ALPACA_PAPER',
+                'account_name': self.config.get('account_name', 'large-default'),  # MULTI-ACCOUNT
                 'explain_json': {
                     **explain_json,
                     'alpaca_order_id': order_id,
@@ -515,6 +567,8 @@ class AlpacaPaperBroker:
                     'api_bid': bid,
                     'api_ask': ask
                 },
+                # CRITICAL: Pass features for learning
+                'entry_features_json': features_snapshot,
                 # Options-specific fields
                 'instrument_type': instrument_type,
                 'strike_price': strike_price,
@@ -534,13 +588,15 @@ class AlpacaPaperBroker:
                 recommendation, run_id, entry_price, fill_model,
                 slippage_bps, qty, notional, stop_loss, take_profit,
                 max_hold_minutes, explain_json, risk_json,
-                reason=f"Alpaca options error: {str(e)}"
+                reason=f"Alpaca options error: {str(e)}",
+                features_snapshot=features_snapshot
             )
     
     def _simulate_execution(
         self, recommendation, run_id, entry_price, fill_model,
         slippage_bps, qty, notional, stop_loss, take_profit,
-        max_hold_minutes, explain_json, risk_json, reason: str
+        max_hold_minutes, explain_json, risk_json, reason: str,
+        features_snapshot: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """
         Fallback to simulation if Alpaca fails.
@@ -572,6 +628,7 @@ class AlpacaPaperBroker:
             'take_profit_price': take_profit,
             'max_hold_minutes': max_hold_minutes,
             'execution_mode': 'SIMULATED_FALLBACK',
+            'account_name': self.config.get('account_name', 'large-default'),  # MULTI-ACCOUNT
             'explain_json': {
                 **explain_json,
                 'fallback_reason': reason
@@ -581,7 +638,9 @@ class AlpacaPaperBroker:
                 'broker': 'simulated_fallback',
                 'model': fill_model,
                 'slippage_bps': slippage_bps
-            }
+            },
+            # CRITICAL: Pass features even in simulation
+            'entry_features_json': features_snapshot or {}
         }
     
     def get_account(self) -> Dict[str, Any]:

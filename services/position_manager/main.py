@@ -40,6 +40,10 @@ def main():
     logger.info(f"Run time: {start_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
     logger.info("=" * 80)
     
+    # Import account configuration
+    from config import ACCOUNT_NAME
+    logger.info(f"Managing positions for account: {ACCOUNT_NAME}")
+    
     # Phase 17: Initialize bar fetcher for options learning
     from config import ALPACA_API_KEY, ALPACA_API_SECRET
     from bar_fetcher import OptionBarFetcher
@@ -56,10 +60,11 @@ def main():
         
         # Step 2: THEN sync new positions from recent executions in our database
         # Look back 10 minutes to catch any executions since last run
+        # CRITICAL: Pass account_name to filter by this instance's account
         sync_since = start_time - timedelta(minutes=10)
         logger.info(f"\nStep 2: Syncing positions from executions since {sync_since.strftime('%H:%M:%S')}")
         
-        new_count = monitor.sync_new_positions(sync_since)
+        new_count = monitor.sync_new_positions(sync_since, ACCOUNT_NAME)
         if new_count > 0:
             logger.info(f"✓ Created {new_count} new position(s) from filled executions")
         else:
@@ -219,8 +224,8 @@ if __name__ == "__main__":
         while True:
             try:
                 main()
-                logger.info("Sleeping for 5 minutes until next check...")
-                time.sleep(300)  # 5 minutes
+                logger.info("Sleeping for 1 minute until next check...")
+                time.sleep(60)  # 1 minute - CRITICAL: was 300s, positions were closing in 4 min before we could monitor!
             except KeyboardInterrupt:
                 logger.info("Shutting down gracefully...")
                 break

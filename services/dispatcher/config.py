@@ -93,15 +93,25 @@ def load_config() -> Dict[str, Any]:
         alpaca_creds['account_name'] = 'large-default'
         print(f"Using default Alpaca credentials (no tier-specific secret found)")
     
-    # Try to load dispatcher-specific config from SSM, use defaults if not found
+    # Try to load dispatcher-specific config from SSM (tier-specific)
+    # MULTI-ACCOUNT: Load tier-specific config based on ACCOUNT_TIER env var
     try:
-        dispatcher_config_str = ssm.get_parameter(
-            Name='/ops-pipeline/dispatcher_config'
-        )['Parameter']['Value']
+        config_name = f'/ops-pipeline/dispatcher_config_{account_tier}'
+        dispatcher_config_str = ssm.get_parameter(Name=config_name)['Parameter']['Value']
         dispatcher_config = json.loads(dispatcher_config_str)
+        print(f"Loaded tier-specific config: {config_name}")
     except:
-        # Use sensible defaults
-        dispatcher_config = {}
+        # Fallback to default config for backwards compatibility
+        try:
+            dispatcher_config_str = ssm.get_parameter(
+                Name='/ops-pipeline/dispatcher_config'
+            )['Parameter']['Value']
+            dispatcher_config = json.loads(dispatcher_config_str)
+            print(f"Using default config (no tier-specific config found)")
+        except:
+            # Use sensible defaults
+            dispatcher_config = {}
+            print(f"Using hardcoded defaults (no SSM config found)")
 
     # Paper trading sizing overrides (optional)
     paper_ignore_buying_power = dispatcher_config.get('paper_ignore_buying_power', False)

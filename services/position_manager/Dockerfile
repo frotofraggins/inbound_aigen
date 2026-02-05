@@ -1,6 +1,5 @@
 FROM python:3.11-slim
-# Cache bust: 2026-01-30-convert-to-service
-# CACHE BUST: 2026-01-29-23-36 - Fix Alpaca API method
+# CACHE BUST: 2026-02-03-16:20 - Use close_position API instead of manual sell orders
 
 WORKDIR /app
 

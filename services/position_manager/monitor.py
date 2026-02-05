@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import GetAssetsRequest
 from alpaca.data.requests import StockLatestQuoteRequest
 import pytz
 
@@ -53,8 +54,11 @@ def get_current_price(position: Dict[str, Any]) -> Optional[float]:
             # For options, we need to query the options API
             # This is more complex - use Alpaca's options data API
             try:
-                # Get option position from Alpaca
-                alpaca_position = alpaca_client.get_open_position(position['ticker'])
+                # CRITICAL FIX 2026-02-05: Use option_symbol, not ticker
+                # Options must be queried by full symbol (e.g., MSFT260220P00400000)
+                # not by underlying ticker (e.g., MSFT)
+                option_symbol = position.get('option_symbol') or position['ticker']
+                alpaca_position = alpaca_client.get_open_position(option_symbol)
                 if alpaca_position:
                     return float(alpaca_position.current_price)
             except Exception as e:
@@ -81,20 +85,44 @@ def update_position_price(position: Dict[str, Any]) -> bool:
             logger.warning(f"Could not get price for position {position['id']}")
             return False
         
-        # Calculate P&L
+        # Ensure current_price is float (not Decimal)
+        current_price = float(current_price)
+        
+        # Calculate P&L (side-aware)
         entry_price = float(position['entry_price'])
         quantity = float(position['quantity'])
+        multiplier = 100 if position['instrument_type'] in ('CALL', 'PUT') else 1
+        side = (position.get('side') or 'long').lower()
         
-        # For long positions (which is all we do currently)
-        pnl_dollars = (current_price - entry_price) * quantity
-        pnl_percent = ((current_price / entry_price) - 1) * 100
+        if side in ('short', 'sell_short'):
+            pnl_dollars = (entry_price - current_price) * quantity * multiplier
+            pnl_percent = ((entry_price / current_price) - 1) * 100 if current_price else 0.0
+        else:
+            pnl_dollars = (current_price - entry_price) * quantity * multiplier
+            pnl_percent = ((current_price / entry_price) - 1) * 100 if entry_price else 0.0
+
+        # Update running MFE/MAE (unrealized path extremes)
+        best_pnl_pct = float(position.get('best_unrealized_pnl_pct') or 0.0)
+        worst_pnl_pct = float(position.get('worst_unrealized_pnl_pct') or 0.0)
+        best_pnl_dollars = float(position.get('best_unrealized_pnl_dollars') or 0.0)
+        worst_pnl_dollars = float(position.get('worst_unrealized_pnl_dollars') or 0.0)
+
+        best_pnl_pct = max(best_pnl_pct, pnl_percent)
+        worst_pnl_pct = min(worst_pnl_pct, pnl_percent)
+        best_pnl_dollars = max(best_pnl_dollars, pnl_dollars)
+        worst_pnl_dollars = min(worst_pnl_dollars, pnl_dollars)
         
         # Update database
         db.update_position_price(
             position['id'],
             current_price,
             pnl_dollars,
-            pnl_percent
+            pnl_percent,
+            best_unrealized_pnl_pct=best_pnl_pct,
+            worst_unrealized_pnl_pct=worst_pnl_pct,
+            best_unrealized_pnl_dollars=best_pnl_dollars,
+            worst_unrealized_pnl_dollars=worst_pnl_dollars,
+            last_mark_price=current_price
         )
         
         # Phase 17: Capture option bars for AI learning
@@ -134,6 +162,10 @@ def update_position_price(position: Dict[str, Any]) -> bool:
         position['current_price'] = current_price
         position['current_pnl_dollars'] = pnl_dollars
         position['current_pnl_percent'] = pnl_percent
+        position['best_unrealized_pnl_pct'] = best_pnl_pct
+        position['worst_unrealized_pnl_pct'] = worst_pnl_pct
+        position['best_unrealized_pnl_dollars'] = best_pnl_dollars
+        position['worst_unrealized_pnl_dollars'] = worst_pnl_dollars
         
         return True
         
@@ -154,17 +186,25 @@ def check_exit_conditions(position: Dict[str, Any]) -> List[Dict[str, Any]]:
     if trailing_exit:
         exits_to_trigger.append(trailing_exit)
     
-    # NEW: Check option-specific exits if this is an options position (Phase 3)
+    # CRITICAL FIX: For options, use ONLY option-specific exit logic
+    # to avoid duplicate exit checking (was causing premature exits)
     if position['instrument_type'] in ('CALL', 'PUT'):
         option_exits = check_exit_conditions_options(position)
         exits_to_trigger.extend(option_exits)
+        
+        # Still check time-based exits (not price-based)
+        exits_to_trigger.extend(check_time_based_exits(position))
+        
+        # DISABLED 2026-02-05: Partial exits broken ("qty must be > 0" errors)
+        # TODO: Fix partial exit logic before re-enabling
+        # partial_exit = check_partial_exit(position)
+        # if partial_exit:
+        #     exits_to_trigger.append(partial_exit)
+        
+        # Sort and return - DON'T check price-based stops below
+        return sorted(exits_to_trigger, key=lambda x: x['priority'])
     
-    # NEW: Check for partial exits (Phase 4)
-    partial_exit = check_partial_exit(position)
-    if partial_exit:
-        exits_to_trigger.append(partial_exit)
-    
-    # Original exits (still check these)
+    # For STOCKS: Use original price-based exit logic
     current_price = float(position['current_price'])
     stop_loss = float(position['stop_loss'])
     take_profit = float(position['take_profit'])
@@ -185,54 +225,13 @@ def check_exit_conditions(position: Dict[str, Any]) -> List[Dict[str, Any]]:
             'message': f'Take profit hit: ${current_price:.2f} >= ${take_profit:.2f}'
         })
     
-    # Check 3: Day trade time limit (must close by 3:55 PM ET)
-    if position['strategy_type'] == 'day_trade':
-        now_et = get_eastern_time()
-        close_time = DAY_TRADE_CLOSE_TIME
-        
-        if now_et.time() >= close_time:
-            exits_to_trigger.append({
-                'reason': 'day_trade_close',
-                'priority': 2,
-                'message': f'Day trade must close by {close_time.strftime("%H:%M")} ET'
-            })
+    # DISABLED 2026-02-05: Partial exits broken  
+    # partial_exit = check_partial_exit(position)
+    # if partial_exit:
+    #     exits_to_trigger.append(partial_exit)
     
-    # Check 4: Max hold time exceeded
-    if position['max_hold_minutes']:
-        entry_time = position['entry_time']
-        if entry_time.tzinfo is None:
-            entry_time = entry_time.replace(tzinfo=timezone.utc)
-        
-        now_utc = datetime.now(timezone.utc)
-        hold_minutes = (now_utc - entry_time).total_seconds() / 60
-        
-        if hold_minutes >= position['max_hold_minutes']:
-            exits_to_trigger.append({
-                'reason': 'max_hold_time',
-                'priority': 3,
-                'message': f'Max hold time exceeded: {hold_minutes:.0f} >= {position["max_hold_minutes"]} minutes'
-            })
-    
-    # Check 5: Options expiration risk (close 1 day before expiry)
-    if position['expiration_date']:
-        exp_date = position['expiration_date']
-        if isinstance(exp_date, str):
-            exp_date = datetime.strptime(exp_date, '%Y-%m-%d').date()
-        
-        # Convert to datetime at market close (4 PM ET = 21:00 UTC)
-        exp_datetime = datetime.combine(exp_date, datetime.min.time()).replace(
-            hour=21, minute=0, tzinfo=timezone.utc
-        )
-        
-        now_utc = datetime.now(timezone.utc)
-        hours_to_expiry = (exp_datetime - now_utc).total_seconds() / 3600
-        
-        if hours_to_expiry <= OPTIONS_EXPIRY_WARNING_HOURS:
-            exits_to_trigger.append({
-                'reason': 'expiration_risk',
-                'priority': 2,
-                'message': f'Options expiring in {hours_to_expiry:.1f} hours'
-            })
+    # Time-based exits (applies to both stocks and options)
+    exits_to_trigger.extend(check_time_based_exits(position))
     
     # Check 6: Bracket order verification
     if not position['bracket_order_accepted']:
@@ -264,7 +263,10 @@ def verify_bracket_orders(position: Dict[str, Any]) -> bool:
     """
     try:
         # Get all open orders
-        orders = alpaca_client.get_orders(status='open')
+        from alpaca.trading.requests import GetOrdersRequest
+        from alpaca.trading.enums import QueryOrderStatus
+        request = GetOrdersRequest(status=QueryOrderStatus.OPEN)
+        orders = alpaca_client.get_orders(filter=request)
         
         stop_order_id = position.get('stop_order_id')
         target_order_id = position.get('target_order_id')
@@ -322,11 +324,80 @@ def check_partial_fill(position: Dict[str, Any]) -> Optional[float]:
         return None
 
 
+def check_time_based_exits(position: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Check time-based exit conditions (applies to both stocks and options)
+    Separated from price-based exits to avoid duplication
+    """
+    exits = []
+    
+    try:
+        # Check 1: Day trade time limit (must close by 3:55 PM ET)
+        if position['strategy_type'] == 'day_trade':
+            now_et = get_eastern_time()
+            close_time = DAY_TRADE_CLOSE_TIME
+            
+            if now_et.time() >= close_time:
+                exits.append({
+                    'reason': 'day_trade_close',
+                    'priority': 2,
+                    'message': f'Day trade must close by {close_time.strftime("%H:%M")} ET'
+                })
+        
+        # Check 2: Max hold time exceeded
+        if position['max_hold_minutes']:
+            entry_time = position['entry_time']
+            if entry_time.tzinfo is None:
+                entry_time = entry_time.replace(tzinfo=timezone.utc)
+            
+            now_utc = datetime.now(timezone.utc)
+            hold_minutes = (now_utc - entry_time).total_seconds() / 60
+            
+            if hold_minutes >= position['max_hold_minutes']:
+                exits.append({
+                    'reason': 'max_hold_time',
+                    'priority': 3,
+                    'message': f'Max hold time exceeded: {hold_minutes:.0f} >= {position["max_hold_minutes"]} minutes'
+                })
+        
+        # Check 3: Options expiration risk (close 1 day before expiry)
+        if position['expiration_date']:
+            exp_date = position['expiration_date']
+            if isinstance(exp_date, str):
+                exp_date = datetime.strptime(exp_date, '%Y-%m-%d').date()
+            
+            # Convert to datetime at market close (4 PM ET = 21:00 UTC)
+            exp_datetime = datetime.combine(exp_date, datetime.min.time()).replace(
+                hour=21, minute=0, tzinfo=timezone.utc
+            )
+            
+            now_utc = datetime.now(timezone.utc)
+            hours_to_expiry = (exp_datetime - now_utc).total_seconds() / 3600
+            
+            if hours_to_expiry <= OPTIONS_EXPIRY_WARNING_HOURS:
+                exits.append({
+                    'reason': 'expiration_risk',
+                    'priority': 2,
+                    'message': f'Options expiring in {hours_to_expiry:.1f} hours'
+                })
+        
+        return exits
+        
+    except Exception as e:
+        logger.error(f"Error checking time-based exits for position {position['id']}: {e}")
+        return []
+
+
 def check_trailing_stop(position: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Trailing stop: Lock in 75% of peak gains
     Updates peak price as position moves up
+    
+    NOTE: Disabled until peak_price column is added to database
     """
+    # Enabled 2026-02-04 - Trailing stops active!
+    # If peak_price column doesn't exist, will get clear error
+    
     try:
         current_price = float(position['current_price'])
         entry_price = float(position['entry_price'])
@@ -376,6 +447,9 @@ def check_exit_conditions_options(position: Dict[str, Any]) -> List[Dict[str, An
     """
     Option-specific exit conditions
     Uses option premium P&L instead of underlying stock price
+    
+    CRITICAL FIX (2026-02-04): Widened stops from -25%/+50% to -40%/+80%
+    and added 30-minute minimum hold time to prevent premature exits
     """
     exits = []
     
@@ -386,23 +460,48 @@ def check_exit_conditions_options(position: Dict[str, Any]) -> List[Dict[str, An
         # Calculate option P&L percentage
         option_pnl_pct = ((current_price / entry_price) - 1) * 100
         
-        # Exit 1: Option profit target (+50%)
-        if option_pnl_pct >= 50:
+        # Calculate hold time
+        entry_time = position['entry_time']
+        if entry_time.tzinfo is None:
+            entry_time = entry_time.replace(tzinfo=timezone.utc)
+        now_utc = datetime.now(timezone.utc)
+        hold_minutes = (now_utc - entry_time).total_seconds() / 60
+        
+        # MINIMUM HOLD TIME: Don't exit options in first 30 minutes
+        # Options premiums are volatile - give them room to breathe
+        # Exception: Allow exit if catastrophic loss (>50%)
+        if hold_minutes < 30:
+            if option_pnl_pct > -50:
+                logger.debug(
+                    f"Position {position['id']}: Too early to exit "
+                    f"(held {hold_minutes:.1f} min, P&L {option_pnl_pct:.1f}%)"
+                )
+                return []  # Don't exit yet - too early
+            else:
+                logger.warning(
+                    f"Position {position['id']}: Catastrophic loss {option_pnl_pct:.1f}%, "
+                    f"exiting early at {hold_minutes:.1f} minutes"
+                )
+        
+        # Exit 1: Option profit target (+80%, was +50%)
+        # Widened to account for option premium volatility
+        if option_pnl_pct >= 80:
             exits.append({
                 'reason': 'option_profit_target',
                 'priority': 1,
-                'message': f'Option +{option_pnl_pct:.1f}% profit (target +50%)'
+                'message': f'Option +{option_pnl_pct:.1f}% profit (target +80%)'
             })
         
-        # Exit 2: Option stop loss (-25%)
-        if option_pnl_pct <= -25:
+        # Exit 2: Option stop loss (-40%, was -25%)
+        # Widened to give premiums room to move with normal volatility
+        if option_pnl_pct <= -40:
             exits.append({
                 'reason': 'option_stop_loss',
                 'priority': 1,
-                'message': f'Option {option_pnl_pct:.1f}% loss (stop -25%)'
+                'message': f'Option {option_pnl_pct:.1f}% loss (stop -40%)'
             })
         
-        # Exit 3: Time decay risk (theta burn)
+        # Exit 3: Time decay risk (theta burn) - only if unprofitable near expiry
         if position['expiration_date']:
             exp_date = position['expiration_date']
             if isinstance(exp_date, str):
@@ -411,8 +510,9 @@ def check_exit_conditions_options(position: Dict[str, Any]) -> List[Dict[str, An
             
             days_to_expiry = (exp_date - datetime.now().date()).days
             
-            # If < 7 days to expiry and not profitable, exit to avoid theta decay
-            if days_to_expiry <= 7 and option_pnl_pct < 20:
+            # If < 7 days to expiry and not profitable enough, exit to avoid theta decay
+            # Increased threshold from 20% to 30% to be more conservative
+            if days_to_expiry <= 7 and option_pnl_pct < 30:
                 exits.append({
                     'reason': 'theta_decay_risk',
                     'priority': 2,
@@ -484,7 +584,7 @@ def sync_from_alpaca_positions() -> int:
         logger.info("Syncing positions from Alpaca API...")
         
         # Get all open positions from Alpaca
-        alpaca_positions = alpaca_client.get_all_positions()
+        alpaca_positions = list(alpaca_client.get_all_positions())
         
         if not alpaca_positions:
             logger.info("No positions found in Alpaca")
@@ -529,10 +629,11 @@ def sync_from_alpaca_positions() -> int:
                 entry_price = float(alpaca_pos.avg_entry_price)
                 current_price = float(alpaca_pos.current_price)
                 
-                # Calculate stops (use 25% for options, 2% for stock)
+                # Calculate stops
+                # CRITICAL FIX (2026-02-04): Widened option stops to match exit logic
                 if is_option:
-                    stop_loss = entry_price * 0.75  # -25% for options
-                    take_profit = entry_price * 1.50  # +50% for options
+                    stop_loss = entry_price * 0.60  # -40% for options (was 0.75 = -25%)
+                    take_profit = entry_price * 1.80  # +80% for options (was 1.50 = +50%)
                 else:
                     stop_loss = entry_price * 0.98  # -2% for stock
                     take_profit = entry_price * 1.03  # +3% for stock
@@ -588,14 +689,20 @@ def sync_from_alpaca_positions() -> int:
         return 0
 
 
-def sync_new_positions(since_time: datetime) -> int:
+def sync_new_positions(since_time: datetime, account_name: str = 'large') -> int:
     """
     Sync new positions from filled executions
-    Returns number of positions created
+    
+    Args:
+        since_time: Only sync executions after this time
+        account_name: Filter by account name (e.g., 'large', 'tiny')
+    
+    Returns: Number of positions created
     """
     try:
         # Get filled executions that aren't tracked yet
-        new_executions = db.get_filled_executions_since(since_time)
+        # CRITICAL: Pass account_name to filter by this instance's account
+        new_executions = db.get_filled_executions_since(since_time, account_name)
         
         count = 0
         for execution in new_executions:
@@ -603,7 +710,8 @@ def sync_new_positions(since_time: datetime) -> int:
                 position_id = db.create_active_position(execution)
                 logger.info(
                     f"Created active position {position_id} for "
-                    f"{execution['ticker']} {execution['instrument_type']}"
+                    f"{execution['ticker']} {execution['instrument_type']} "
+                    f"(account: {account_name})"
                 )
                 count += 1
                 
@@ -616,7 +724,8 @@ def sync_new_positions(since_time: datetime) -> int:
                         'ticker': execution['ticker'],
                         'instrument_type': execution['instrument_type'],
                         'entry_price': float(execution['entry_price']),
-                        'quantity': float(execution['quantity'])
+                        'quantity': float(execution['quantity']),
+                        'account_name': account_name
                     }
                 )
                 

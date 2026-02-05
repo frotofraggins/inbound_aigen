@@ -9,11 +9,13 @@
   "containerDefinitions": [
     {
       "name": "dispatcher",
-      "image": "160027201036.dkr.ecr.us-west-2.amazonaws.com/ops-pipeline/dispatcher@sha256:0ab2b393d452e5928764a7688230a06eecb0fb97559f6dc2a761283abe8cda68",
+      "image": "160027201036.dkr.ecr.us-west-2.amazonaws.com/ops-pipeline/dispatcher:sql-transaction-fix-v4",
       "essential": true,
       "environment": [
         {"name": "AWS_REGION", "value": "us-west-2"},
-        {"name": "EXECUTION_MODE", "value": "ALPACA_PAPER"}
+        {"name": "EXECUTION_MODE", "value": "ALPACA_PAPER"},
+        {"name": "ACCOUNT_TIER", "value": "large"},
+        {"name": "RUN_MODE", "value": "LOOP"}
       ],
       "logConfiguration": {
         "logDriver": "awslogs",

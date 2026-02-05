@@ -1,0 +1,4 @@
+{
+  "migration_id": "add_account_name_column",
+  "sql": "ALTER TABLE dispatch_executions ADD COLUMN IF NOT EXISTS account_name VARCHAR(50) DEFAULT 'large'; UPDATE dispatch_executions SET account_name = 'large' WHERE account_name IS NULL;"
+}

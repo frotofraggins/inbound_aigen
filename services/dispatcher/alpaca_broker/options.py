@@ -633,11 +633,6 @@ def validate_iv_rank(
             # Not enough history, allow trade but log warning
             return True, f"Insufficient IV history ({len(iv_history)} obs), allowing trade"
         
-        # Calculate IV rank using function from feature_computer
-        import sys, os
-        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), 'feature_computer_1m'))
-        from features import calculate_iv_rank
-        
         iv_rank = calculate_iv_rank(current_iv, iv_history)
         
         # Store this IV value for future calculations
@@ -652,6 +647,24 @@ def validate_iv_rank(
     except Exception as e:
         # Don't block trades on IV check errors
         return True, f"IV rank check error (allowing trade): {e}"
+
+
+def calculate_iv_rank(current_iv: float, iv_history: List[float]) -> float:
+    """
+    Calculate IV Rank: where current IV sits in 52-week range.
+    Returns 0.5 if insufficient history (< 30 observations).
+    """
+    if not iv_history or len(iv_history) < 30:
+        return 0.5
+
+    iv_high = max(iv_history)
+    iv_low = min(iv_history)
+
+    if iv_high == iv_low:
+        return 0.5
+
+    iv_rank = (current_iv - iv_low) / (iv_high - iv_low)
+    return max(0.0, min(1.0, iv_rank))
 
 
 def calculate_kelly_criterion_size(

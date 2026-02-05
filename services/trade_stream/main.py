@@ -136,6 +136,7 @@ async def handle_trade_update(data):
     """
     Handle real-time trade updates from Alpaca
     Syncs positions instantly when orders fill
+    Phase 3: Added idempotency to prevent duplicate position creation
     """
     try:
         event = data.event
@@ -148,6 +149,13 @@ async def handle_trade_update(data):
         logger.info(f"   Status: {order.status}")
         
         if event == 'fill':
+            # Phase 3: Check for duplicate events
+            event_id = f"fill_{order.id}_{order.filled_at}"
+            if db.check_event_processed(event_id):
+                logger.info(f"⚠️ Event already processed: {event_id}")
+                logger.info("=" * 80)
+                return
+            
             logger.info(f"✅ ORDER FILLED - Syncing position...")
             
             # Parse symbol
@@ -175,14 +183,15 @@ async def handle_trade_update(data):
                 stop_loss = entry_price * 0.98  # -2% for stocks
                 take_profit = entry_price * 1.03  # +3% for stocks
             
-            # Sync to database INSTANTLY
-            position_id = db.create_position_from_alpaca(
+            # Phase 3: Sync to database with idempotency (uses order_id)
+            position_id = db.create_position_from_alpaca_with_order_id(
                 ticker=ticker,
                 instrument_type=instrument_type,
                 side='long',
                 quantity=qty,
                 entry_price=entry_price,
                 current_price=entry_price,
+                order_id=str(order.id),
                 strike_price=strike_price,
                 expiration_date=exp_date,
                 stop_loss=stop_loss,
@@ -190,21 +199,38 @@ async def handle_trade_update(data):
                 option_symbol=order.symbol if is_option else None
             )
             
-            logger.info(f"✅ Position {position_id} synced in REAL-TIME")
-            logger.info(f"   Stop Loss: ${stop_loss:.2f}")
-            logger.info(f"   Take Profit: ${take_profit:.2f}")
-            
-            # Log WebSocket event
-            db.log_position_event(
-                position_id,
-                'synced_realtime_websocket',
-                {
-                    'order_id': str(order.id),
-                    'filled_at': str(order.filled_at),
-                    'latency': '<1 second',
-                    'method': 'websocket_trade_stream'
-                }
-            )
+            if position_id:
+                logger.info(f"✅ Position {position_id} synced in REAL-TIME")
+                logger.info(f"   Stop Loss: ${stop_loss:.2f}")
+                logger.info(f"   Take Profit: ${take_profit:.2f}")
+                
+                # Phase 3: Record event as processed
+                db.record_event_processed(
+                    event_id=event_id,
+                    event_type='fill',
+                    order_id=str(order.id),
+                    symbol=order.symbol,
+                    event_data={
+                        'filled_at': str(order.filled_at),
+                        'filled_qty': str(order.filled_qty),
+                        'filled_avg_price': str(order.filled_avg_price)
+                    }
+                )
+                
+                # Log WebSocket event
+                db.log_position_event(
+                    position_id,
+                    'synced_realtime_websocket',
+                    {
+                        'order_id': str(order.id),
+                        'filled_at': str(order.filled_at),
+                        'latency': '<1 second',
+                        'method': 'websocket_trade_stream',
+                        'idempotent': True
+                    }
+                )
+            else:
+                logger.warning(f"⚠️ Failed to create/find position for order {order.id}")
             
             logger.info("=" * 80)
             

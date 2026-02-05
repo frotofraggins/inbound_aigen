@@ -74,7 +74,7 @@ class OpportunityAnalyzer:
                         WHERE ticker = lf.ticker
                         AND created_at BETWEEN lf.ts - INTERVAL '2 hours' AND lf.ts + INTERVAL '1 hour'
                     ) as sentiment_score
-                FROM lane_features lf
+                FROM lane_features_clean lf
                 WHERE 
                     DATE(lf.ts AT TIME ZONE 'America/New_York') = %s
                     AND lf.volume_ratio >= 2.0

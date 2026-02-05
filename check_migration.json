@@ -1,0 +1,1 @@
+{"sql": "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'active_positions' AND column_name IN ('execution_uuid', 'entry_features_json', 'best_unrealized_pnl_pct', 'worst_unrealized_pnl_pct', 'strategy_type', 'side') ORDER BY column_name"}

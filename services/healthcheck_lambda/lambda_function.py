@@ -16,7 +16,7 @@ HEALTH_QUERY = """
 SELECT 
     -- Core lag metrics (0 if no data)
     COALESCE(EXTRACT(EPOCH FROM (NOW() - (SELECT MAX(ts) FROM lane_telemetry)))::int, 0) AS telemetry_lag_sec,
-    COALESCE(EXTRACT(EPOCH FROM (NOW() - (SELECT MAX(computed_at) FROM lane_features)))::int, 0) AS feature_lag_sec,
+    COALESCE(EXTRACT(EPOCH FROM (NOW() - (SELECT MAX(computed_at) FROM lane_features_clean)))::int, 0) AS feature_lag_sec,
     COALESCE(EXTRACT(EPOCH FROM (NOW() - (SELECT MAX(computed_at) FROM watchlist_state)))::int, 0) AS watchlist_lag_sec,
     COALESCE(EXTRACT(EPOCH FROM (NOW() - (SELECT MAX(created_at) FROM dispatch_recommendations)))::int, 0) AS reco_lag_sec,
     COALESCE(EXTRACT(EPOCH FROM (NOW() - (SELECT MAX(simulated_ts) FROM dispatch_executions)))::int, 0) AS exec_lag_sec,
@@ -27,7 +27,7 @@ SELECT
     
     -- Throughput metrics
     (SELECT COUNT(*) FROM lane_telemetry WHERE ts >= NOW() - INTERVAL '10 minutes') AS bars_written_10m,
-    (SELECT COUNT(DISTINCT ticker) FROM lane_features WHERE computed_at >= NOW() - INTERVAL '10 minutes') AS features_computed_10m,
+    (SELECT COUNT(DISTINCT ticker) FROM lane_features_clean WHERE computed_at >= NOW() - INTERVAL '10 minutes') AS features_computed_10m,
     
     -- Critical safety metrics
     (SELECT COUNT(*) FROM dispatcher_runs 

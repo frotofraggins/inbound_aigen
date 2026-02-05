@@ -1,0 +1,3 @@
+{
+  "sql": "ALTER TABLE active_positions ADD COLUMN IF NOT EXISTS original_quantity INTEGER; ALTER TABLE active_positions ADD COLUMN IF NOT EXISTS peak_price DECIMAL(12, 4); ALTER TABLE active_positions ADD COLUMN IF NOT EXISTS trailing_stop_price DECIMAL(12, 4); ALTER TABLE active_positions ADD COLUMN IF NOT EXISTS entry_underlying_price DECIMAL(12, 4);"
+}

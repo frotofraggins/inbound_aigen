@@ -74,7 +74,7 @@ def get_latest_features(conn, tickers):
                 volume_avg_20,
                 volume_ratio,
                 volume_surge
-            FROM lane_features
+            FROM lane_features_clean
             WHERE ticker = ANY(%s)
             ORDER BY ticker, computed_at DESC
         """, (tickers,))

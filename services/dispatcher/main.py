@@ -37,7 +37,7 @@ from db.repositories import (
 from risk.gates import evaluate_all_gates
 from sim.pricing import compute_entry_price, compute_position_size, compute_stops
 from sim.broker import SimulatedBroker
-from alpaca.broker import AlpacaPaperBroker
+from alpaca_broker.broker import AlpacaPaperBroker
 import os
 import boto3
 
@@ -81,7 +81,8 @@ def process_recommendation(
         has_open_position = check_open_position(conn, ticker)
         
         # Get account-level state for kill switch gates
-        account_state = get_account_state(conn)
+        account_name = config.get('account_name', 'large')
+        account_state = get_account_state(conn, account_name)
         
         # Evaluate all risk gates (including account-level kill switches)
         gates_passed, gate_results = evaluate_all_gates(
@@ -222,7 +223,13 @@ def process_recommendation(
             return 'EXECUTED'
     
     except Exception as e:
-        # Processing error - mark as FAILED
+        # Processing error - rollback transaction BEFORE marking as failed
+        # This clears the failed transaction state so mark_failed() can execute
+        try:
+            conn.rollback()
+        except:
+            pass  # Connection may already be closed
+        
         error_msg = f"{type(e).__name__}: {str(e)}"
         mark_failed(conn, rec_id, run_id, error_msg)
         
@@ -237,6 +244,8 @@ def process_recommendation(
 def main():
     """Main dispatcher execution loop."""
     log_event('dispatcher_start', {'service': 'dispatcher'})
+    
+    conn = None  # Initialize connection variable
     
     try:
         # Load configuration
@@ -377,6 +386,15 @@ def main():
             'error_type': type(e).__name__,
             'error_message': str(e)
         })
+        
+        # CRITICAL: Close connection on error to prevent transaction state issues
+        if conn is not None:
+            try:
+                conn.rollback()  # Rollback failed transaction
+                conn.close()
+            except:
+                pass  # Connection may already be closed
+        
         sys.exit(1)
 
 if __name__ == '__main__':
@@ -400,9 +418,18 @@ if __name__ == '__main__':
             except KeyboardInterrupt:
                 log_event('dispatcher_shutdown', {'reason': 'keyboard_interrupt'})
                 break
+            except SystemExit:
+                # main() called sys.exit(1) due to error
+                # Log and continue to next iteration (will create new connection)
+                log_event('dispatcher_loop_error', {
+                    'error': 'main() exited with error',
+                    'action': 'retrying_in_30s'
+                })
+                time.sleep(30)  # Wait before retry
             except Exception as e:
                 log_event('dispatcher_loop_error', {
                     'error': str(e),
-                    'error_type': type(e).__name__
+                    'error_type': type(e).__name__,
+                    'action': 'retrying_in_30s'
                 })
                 time.sleep(30)  # Wait before retry

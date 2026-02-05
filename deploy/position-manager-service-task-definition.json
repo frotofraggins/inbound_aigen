@@ -9,12 +9,16 @@
   "containerDefinitions": [
     {
       "name": "position-manager",
-      "image": "160027201036.dkr.ecr.us-west-2.amazonaws.com/ops-pipeline/position-manager@sha256:f80e56f1447087de12c751351016b7d76cad3679c5dd8ce5f7a906dddd9fa06c",
+      "image": "160027201036.dkr.ecr.us-west-2.amazonaws.com/ops-pipeline/position-manager:account-filter",
       "essential": true,
       "environment": [
         {
           "name": "RUN_MODE",
           "value": "LOOP"
+        },
+        {
+          "name": "ACCOUNT_NAME",
+          "value": "large"
         }
       ],
       "logConfiguration": {

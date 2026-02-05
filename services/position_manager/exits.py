@@ -3,6 +3,7 @@ Exit enforcement logic
 """
 import logging
 from typing import Dict, Any, Optional
+from datetime import datetime, timezone
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest, ClosePositionRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
@@ -18,6 +19,25 @@ alpaca_client = TradingClient(
     secret_key=ALPACA_API_SECRET,
     paper=True if 'paper' in ALPACA_BASE_URL else False
 )
+
+EXIT_REASON_MAP = {
+    'take_profit': 'tp',
+    'option_profit_target': 'tp',
+    'stop_loss': 'sl',
+    'option_stop_loss': 'sl',
+    'trailing_stop': 'trail',
+    'day_trade_close': 'time_stop',
+    'max_hold_time': 'time_stop',
+    'expiration_risk': 'expiry_risk',
+    'theta_decay_risk': 'theta_decay',
+    'missing_brackets': 'forced_close_missing_bracket',
+    'manual_close': 'manual'
+}
+
+
+def normalize_exit_reason(reason: str) -> str:
+    """Normalize exit reason to a fixed label set."""
+    return EXIT_REASON_MAP.get(reason, 'manual')
 
 
 def force_close_position(
@@ -65,6 +85,78 @@ def force_close_position(
         order_result = submit_close_order(position)
         
         if order_result:
+            # Insert outcome into position_history before closing
+            try:
+                now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
+                entry_time = position.get('entry_time')
+                if entry_time and entry_time.tzinfo is None:
+                    entry_time = entry_time.replace(tzinfo=timezone.utc)
+
+                entry_price = float(position['entry_price'])
+                exit_price = float(position.get('current_price') or entry_price)
+                qty = float(position['quantity'])
+                multiplier = 100 if position['instrument_type'] in ('CALL', 'PUT') else 1
+                side = (position.get('side') or 'long').lower()
+
+                if side in ('short', 'sell_short'):
+                    pnl_dollars = (entry_price - exit_price) * qty * multiplier
+                    pnl_pct = ((entry_price / exit_price) - 1) * 100 if exit_price else 0.0
+                else:
+                    pnl_dollars = (exit_price - entry_price) * qty * multiplier
+                    pnl_pct = ((exit_price / entry_price) - 1) * 100 if entry_price else 0.0
+
+                holding_seconds = 0
+                holding_minutes = 0.0
+                if entry_time:
+                    holding_seconds = int((now_utc - entry_time).total_seconds())
+                    holding_minutes = holding_seconds / 60.0
+
+                best_pnl_pct = float(position.get('best_unrealized_pnl_pct') or 0.0)
+                worst_pnl_pct = float(position.get('worst_unrealized_pnl_pct') or 0.0)
+                best_pnl_dollars = float(position.get('best_unrealized_pnl_dollars') or 0.0)
+                worst_pnl_dollars = float(position.get('worst_unrealized_pnl_dollars') or 0.0)
+
+                instrument_symbol = position.get('option_symbol') or position.get('ticker')
+                asset_type = 'option' if position['instrument_type'] in ('CALL', 'PUT') else 'stock'
+                if position['instrument_type'] == 'CALL':
+                    side_label = 'call'
+                elif position['instrument_type'] == 'PUT':
+                    side_label = 'put'
+                else:
+                    side_label = side
+
+                db.insert_position_history({
+                    'execution_id': position.get('execution_id'),
+                    'execution_uuid': position.get('execution_uuid'),
+                    'ticker': position.get('ticker'),
+                    'instrument_type': position.get('instrument_type'),
+                    'strategy_type': position.get('strategy_type'),
+                    'side_label': side_label,
+                    'qty': qty,
+                    'multiplier': multiplier,
+                    'entry_ts': entry_time or now_utc,
+                    'exit_ts': now_utc,
+                    'entry_price': entry_price,
+                    'exit_price': exit_price,
+                    'pnl_dollars': pnl_dollars,
+                    'pnl_pct': pnl_pct,
+                    'holding_seconds': holding_seconds,
+                    'best_pnl_pct': best_pnl_pct,
+                    'worst_pnl_pct': worst_pnl_pct,
+                    'best_pnl_dollars': best_pnl_dollars,
+                    'worst_pnl_dollars': worst_pnl_dollars,
+                    'iv_rank_at_entry': position.get('entry_iv_rank'),
+                    'spread_at_entry_pct': position.get('entry_spread_pct'),
+                    'entry_features_json': position.get('entry_features_json') or {},
+                    'exit_reason': normalize_exit_reason(reason)
+                })
+                logger.info(f"✓ Position history saved for position {position.get('id')}")
+            except Exception as e:
+                logger.error(f"❌ Position history insert failed: {e}", exc_info=True)
+                logger.error(f"   Position ID: {position.get('id')}")
+                logger.error(f"   Ticker: {position.get('ticker')}")
+                logger.error(f"   Data attempted: {instrument_symbol}, {asset_type}, {side_label}")
+
             # Mark position as closed
             db.close_position(
                 position['id'],
@@ -132,27 +224,28 @@ def submit_close_order(position: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             }
             
         else:  # OPTIONS (CALL or PUT)
-            # For options, need to sell to close
+            # For options, use Alpaca's close_position API
+            # This API is specifically designed for closing positions and won't trigger buying power checks
+            symbol_to_close = position.get('option_symbol') or ticker
+            
             logger.info(
-                f"Submitting market order to close {quantity} contracts of "
-                f"{ticker} {position['instrument_type']}"
+                f"Closing option position via Alpaca close_position API: {symbol_to_close} "
+                f"({quantity} contracts of {ticker} {position['instrument_type']})"
             )
             
-            # Submit market sell order for options
-            order_data = MarketOrderRequest(
-                symbol=ticker,
-                qty=quantity,
-                side=OrderSide.SELL,  # Sell to close long position
-                time_in_force=TimeInForce.DAY
-            )
-            
-            order = alpaca_client.submit_order(order_data)
-            
-            return {
-                'order_id': order.id,
-                'status': order.status,
-                'filled_qty': order.filled_qty if hasattr(order, 'filled_qty') else 0
-            }
+            try:
+                # This API automatically handles closing long/short positions
+                # No buying power checks, no position_intent confusion
+                result = alpaca_client.close_position(symbol_to_close)
+                
+                return {
+                    'order_id': str(result.id) if hasattr(result, 'id') else None,
+                    'status': 'submitted',
+                    'filled_qty': quantity
+                }
+            except Exception as e:
+                logger.error(f"Error closing position {symbol_to_close}: {e}")
+                return None
             
     except Exception as e:
         logger.error(f"Error submitting close order for position {position['id']}: {e}")
@@ -247,18 +340,20 @@ def resubmit_bracket_orders(position: Dict[str, Any], quantity: float) -> bool:
     """
     try:
         ticker = position['ticker']
+        symbol_to_use = position.get('option_symbol') or ticker  # Use option symbol for options
+        quantity = float(position['quantity'])
         stop_price = float(position['stop_loss'])
         target_price = float(position['take_profit'])
         
         logger.info(
-            f"Resubmitting bracket orders for {ticker}: "
+            f"Resubmitting bracket orders for {symbol_to_use}: "
             f"qty={quantity}, stop=${stop_price:.2f}, target=${target_price:.2f}"
         )
         
         # Submit stop loss order
         from alpaca.trading.requests import StopOrderRequest
         stop_order_data = StopOrderRequest(
-            symbol=ticker,
+            symbol=symbol_to_use,
             qty=quantity,
             side=OrderSide.SELL,
             time_in_force=TimeInForce.DAY,
@@ -269,7 +364,7 @@ def resubmit_bracket_orders(position: Dict[str, Any], quantity: float) -> bool:
         # Submit take profit order  
         from alpaca.trading.requests import LimitOrderRequest
         target_order_data = LimitOrderRequest(
-            symbol=ticker,
+            symbol=symbol_to_use,
             qty=quantity,
             side=OrderSide.SELL,
             time_in_force=TimeInForce.DAY,
@@ -315,6 +410,7 @@ def execute_partial_exit(
     """
     try:
         ticker = position['ticker']
+        symbol_to_use = position.get('option_symbol') or ticker  # Use option symbol for options
         current_qty = float(position['quantity'])
         
         logger.info(
@@ -337,7 +433,7 @@ def execute_partial_exit(
         
         # Submit market order to close partial quantity
         order_data = MarketOrderRequest(
-            symbol=ticker,
+            symbol=symbol_to_use,
             qty=quantity_to_close,
             side=OrderSide.SELL,
             time_in_force=TimeInForce.DAY
