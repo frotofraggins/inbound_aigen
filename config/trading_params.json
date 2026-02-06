@@ -83,10 +83,14 @@
     "tiers": {
       "tiny": {
         "max_size": 2000,
-        "risk_pct_day": 0.25,
-        "risk_pct_swing": 0.15,
-        "max_contracts": 2,
-        "description": "$1K-2K accounts: 25% day risk, aggressive growth"
+        "risk_pct_day": 0.08,
+        "risk_pct_swing": 0.05,
+        "max_contracts": 1,
+        "min_confidence": 0.70,
+        "min_volume_ratio": 2.0,
+        "max_daily_trades": 2,
+        "focus_strategy": "high_probability",
+        "description": "$1K-2K accounts: 8% risk, QUALITY over quantity, single contracts only, min 0.70 confidence"
       },
       "small": {
         "max_size": 5000,
