@@ -686,6 +686,120 @@ done
 
 ---
 
+## Multi-Account Configuration
+
+### How Services Choose Accounts
+
+**The system supports TWO Alpaca paper trading accounts:**
+
+1. **Large Account** - $121K capital, tier-based sizing (5-20%)
+2. **Tiny Account** - $1K capital, fixed 8% sizing (learning environment)
+
+**Configuration Method:**
+
+Services use the `ACCOUNT_NAME` environment variable to determine which Alpaca account to connect to:
+
+```bash
+# In ECS task definition
+"environment": [
+  {
+    "name": "ACCOUNT_NAME",
+    "value": "tiny"  # or "large"
+  }
+]
+```
+
+### Secrets Manager Organization
+
+**Two separate Alpaca API key secrets:**
+
+```
+ops-pipeline/alpaca       → Large account credentials
+ops-pipeline/alpaca/tiny  → Tiny account credentials
+```
+
+**How services load credentials:**
+
+```python
+# From services/position_manager/config.py
+account_name = os.environ.get('ACCOUNT_NAME', 'large')
+
+if account_name == 'tiny':
+    alpaca_secret_id = 'ops-pipeline/alpaca/tiny'
+else:
+    alpaca_secret_id = 'ops-pipeline/alpaca'
+
+# Load the appropriate secret
+alpaca_secret = secrets.get_secret_value(SecretId=alpaca_secret_id)
+```
+
+**Services using multi-account pattern:**
+- position-manager-service (ACCOUNT_NAME=large)
+- position-manager-tiny-service (ACCOUNT_NAME=tiny)
+- dispatcher-service (ACCOUNT_NAME=large)
+- dispatcher-tiny-service (ACCOUNT_NAME=tiny)
+
+### Troubleshooting Account Issues
+
+**Problem: Service connecting to wrong account**
+
+**Symptoms:**
+- position-manager-tiny says "No positions found in Alpaca"
+- But Alpaca dashboard shows positions
+- Positions not being monitored
+
+**Solution:**
+1. Check task definition has correct ACCOUNT_NAME:
+```bash
+aws ecs describe-task-definition \
+  --task-definition position-manager-tiny-service \
+  --region us-west-2 \
+  --query 'taskDefinition.containerDefinitions[0].environment'
+```
+
+2. Verify config.py checks ACCOUNT_NAME:
+```bash
+grep -A5 "ACCOUNT_NAME" services/position_manager/config.py
+```
+
+3. Rebuild and redeploy if config was fixed:
+```bash
+cd services/position_manager
+docker build -t 160027201036.dkr.ecr.us-west-2.amazonaws.com/ops-pipeline/position-manager:latest .
+docker push 160027201036.dkr.ecr.us-west-2.amazonaws.com/ops-pipeline/position-manager:latest
+
+# Restart BOTH services (they share the same image)
+aws ecs update-service --cluster ops-pipeline-cluster --service position-manager-service --force-new-deployment --region us-west-2
+aws ecs update-service --cluster ops-pipeline-cluster --service position-manager-tiny-service --force-new-deployment --region us-west-2
+```
+
+**Verify fix worked:**
+```bash
+# Check tiny account logs
+aws logs tail /ecs/ops-pipeline/position-manager-tiny --since 2m --region us-west-2 | grep "Found.*position"
+
+# Should see: "Found 4 position(s) in Alpaca" (not "No positions")
+```
+
+### Database Account Filtering
+
+**All tables have `account_name` column:**
+
+```sql
+-- Get positions for specific account
+SELECT * FROM active_positions WHERE account_name = 'tiny';
+
+-- Get executions for specific account  
+SELECT * FROM dispatch_executions WHERE account_name = 'large';
+```
+
+**Services filter by their ACCOUNT_NAME:**
+- position-manager-tiny only monitors `account_name='tiny'` positions
+- position-manager-service only monitors `account_name='large'` positions
+- Each dispatcher writes its account_name when creating positions
+
+---
+
 ## Quick Reference
 
 **AWS Account:** 160027201036  
@@ -695,6 +809,7 @@ done
 **VPC:** vpc-0444cb2b7a3457502  
 **Log Group Prefix:** /ecs/ops-pipeline/  
 **Alpaca Dashboard:** https://app.alpaca.markets/paper/dashboard
+**Alpaca Secrets:** ops-pipeline/alpaca (large), ops-pipeline/alpaca/tiny
 
 ---
 
