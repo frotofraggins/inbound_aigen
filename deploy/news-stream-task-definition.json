@@ -1,0 +1,25 @@
+{
+  "family": "ops-pipeline-news-stream",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::160027201036:role/ops-pipeline-ecs-task-role",
+  "taskRoleArn": "arn:aws:iam::160027201036:role/ops-pipeline-ecs-task-role",
+  "containerDefinitions": [
+    {
+      "name": "news-stream",
+      "image": "160027201036.dkr.ecr.us-west-2.amazonaws.com/ops-pipeline/news-stream:latest",
+      "essential": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/ops-pipeline/news-stream",
+          "awslogs-region": "us-west-2",
+          "awslogs-stream-prefix": "news",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

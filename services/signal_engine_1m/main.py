@@ -16,6 +16,7 @@ from db import (
     insert_recommendation
 )
 from rules import compute_signal
+from gap_fade import integrate_gap_fade_with_momentum
 
 class DecimalEncoder(json.JSONEncoder):
     """Custom JSON encoder to handle Decimal types."""
@@ -97,6 +98,9 @@ def main():
             # Get sentiment (optional - may not have recent news)
             sentiment = sentiment_map.get(ticker)
             
+            # NEW: Check for gap fade opportunity first (morning only)
+            gap_fade_signal = integrate_gap_fade_with_momentum(ticker, features, conn)
+            
             # Check cooldown
             in_cooldown = check_cooldown(conn, ticker, config['cooldown_minutes'])
             if in_cooldown:
@@ -107,12 +111,21 @@ def main():
                 signals_skipped_cooldown += 1
                 continue
             
-            # Compute signal (Phase 15: now returns strategy_type)
-            action, instrument_type, strategy_type, confidence, reason = compute_signal(
-                ticker,
-                features,
-                sentiment
-            )
+            # Compute signal (gap fade in morning, momentum otherwise)
+            if gap_fade_signal:
+                # Use gap fade signal (morning reversal trade)
+                action = gap_fade_signal['action']
+                instrument_type = gap_fade_signal['instrument']
+                strategy_type = gap_fade_signal['strategy']
+                confidence = gap_fade_signal['confidence']
+                reason = gap_fade_signal  # Full dict as reason
+            else:
+                # Use normal momentum/trend logic
+                action, instrument_type, strategy_type, confidence, reason = compute_signal(
+                    ticker,
+                    features,
+                    sentiment
+                )
             
             # Log the signal decision
             log_event('signal_computed', {
