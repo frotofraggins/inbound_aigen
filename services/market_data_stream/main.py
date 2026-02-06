@@ -14,6 +14,7 @@ import json
 from datetime import datetime
 from decimal import Decimal
 from alpaca.data.live import StockDataStream
+from alpaca.data.enums import Feed
 
 import config
 import db
@@ -284,11 +285,11 @@ async def main():
     
     logger.info(f"📡 Initializing Alpaca market data WebSocket...")
     
-    # Create WebSocket stream  
+    # Create WebSocket stream
     data_stream = StockDataStream(
         api_key=cfg['alpaca_api_key'],
-        secret_key=cfg['alpaca_api_secret']
-        # Use default feed (no need to specify)
+        secret_key=cfg['alpaca_api_secret'],
+        feed=Feed.IEX  # Use IEX feed for real-time data
     )
     
     # Subscribe to bars for all watchlist tickers
