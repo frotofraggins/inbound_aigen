@@ -143,6 +143,49 @@ def calculate_adaptive_confidence_threshold(vol_ratio):
     return base_threshold
 
 
+def detect_momentum_urgency(volume_ratio, distance_sma20, trend_strong):
+    """
+    Detect urgent momentum breakouts requiring IMMEDIATE entry.
+    Don't wait for all confirmations - jump on the train!
+    
+    Research shows: Entering at breakout START vs END = 3x better performance
+    
+    Args:
+        volume_ratio: Current vs average volume
+        distance_sma20: Price distance from SMA
+        trend_strong: Whether in strong trend (±1)
+    
+    Returns:
+        Dict with urgency flag and confidence boost
+    """
+    # Strong volume surge + price breakout + strong trend
+    if (volume_ratio and volume_ratio >= 2.5 and 
+        abs(distance_sma20) >= 0.01 and 
+        trend_strong):
+        return {
+            'urgent': True,
+            'confidence_boost': 1.25,  # 25% boost for momentum
+            'reason': 'MOMENTUM_BREAKOUT_URGENT',
+            'note': 'Volume surge + breakout = enter immediately!'
+        }
+    
+    # Moderate momentum (still good but not urgent)
+    if volume_ratio and volume_ratio >= 2.0 and abs(distance_sma20) >= 0.008:
+        return {
+            'urgent': False,
+            'confidence_boost': 1.10,  # 10% boost
+            'reason': 'MOMENTUM_CONFIRMED',
+            'note': 'Good momentum, normal entry timing'
+        }
+    
+    return {
+        'urgent': False,
+        'confidence_boost': 1.0,
+        'reason': 'NO_MOMENTUM',
+        'note': 'Standard entry conditions'
+    }
+
+
 def calculate_sentiment_boost(sentiment_score, sentiment_direction, primary_direction, news_count):
     """
     Calculate sentiment boost/penalty as confidence multiplier.
@@ -376,10 +419,16 @@ def compute_signal(ticker, features, sentiment):
     )
     
     # =========================================================================
-    # 8. FINAL CONFIDENCE = Base × Sentiment × Volume × Move
+    # 7.5. CHECK MOMENTUM URGENCY (NEW - Feb 6, 2026)
     # =========================================================================
     
-    confidence = base_confidence * sentiment_boost * volume_mult * move_penalty
+    momentum = detect_momentum_urgency(volume_ratio, distance_sma20, can_trade_options)
+    
+    # =========================================================================
+    # 8. FINAL CONFIDENCE = Base × Sentiment × Volume × Move × Momentum
+    # =========================================================================
+    
+    confidence = base_confidence * sentiment_boost * volume_mult * move_penalty * momentum['confidence_boost']
     confidence = min(max(confidence, 0.0), 1.0)
     
     # =========================================================================
@@ -509,17 +558,26 @@ def compute_signal(ticker, features, sentiment):
             }
         },
         
+        'momentum': {
+            'urgent': momentum['urgent'],
+            'boost': round(momentum['confidence_boost'], 2),
+            'reason': momentum['reason'],
+            'note': momentum['note']
+        },
+        
         'decision': {
             'instrument': instrument,
             'strategy': strategy_type,
             'can_trade_options': can_trade_options,
+            'entry_urgency': 'IMMEDIATE' if momentum['urgent'] else 'NORMAL',
             'rationale': (
                 f'{primary_direction} setup: '
                 f'Price {"above" if primary_direction == "BULL" else "below"} SMA20, '
                 f'trend {"strong" if can_trade_options else "weak"} (state={trend_state}), '
                 f'{move_reason.lower()}, '
                 f'volume {volume_reason.split("(")[0].strip().lower()}, '
-                f'sentiment {sentiment_reason.lower()}'
+                f'sentiment {sentiment_reason.lower()}, '
+                f'momentum {momentum["reason"]}'
             )
         },
         
