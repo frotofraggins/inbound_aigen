@@ -23,36 +23,44 @@
 
 ---
 
-## 📚 Essential Documentation (12 Documents)
+## 📚 Core Documentation (3 Essential Files)
 
-### 🌟 **Start Here**
-1. **[SYSTEM_COMPLETE_GUIDE.md](deploy/SYSTEM_COMPLETE_GUIDE.md)** ⭐ MASTER DOC
-   - Complete system overview with real data examples
-   - End-to-end flow explanation
-   - Current production status
+### 🌟 **Start Here - Read These First**
 
-2. **[NEXT_SESSION_PHASES_3_4.md](deploy/NEXT_SESSION_PHASES_3_4.md)** 🚀 ROADMAP
-   - Implementation guide for remaining 15% (trailing stops, IV filtering)
-   - Complete code examples and testing procedures
-   - 5-7 hours to A+ grade
+1. **[SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md)** ⭐ **COMPLETE TECHNICAL REFERENCE**
+   - Complete system architecture and how it works
+   - All 11 services explained
+   - Trading strategy and decision logic
+   - AWS infrastructure details
+   - Database schema
+   - Performance metrics
 
-### 📖 **Operations**
-3. **[RUNBOOK.md](deploy/RUNBOOK.md)** - Daily operations manual
-4. **[TROUBLESHOOTING_GUIDE.md](deploy/TROUBLESHOOTING_GUIDE.md)** - Debugging reference
-5. **[MULTI_ACCOUNT_OPERATIONS_GUIDE.md](deploy/MULTI_ACCOUNT_OPERATIONS_GUIDE.md)** - Account management
+2. **[OPERATIONS_GUIDE.md](OPERATIONS_GUIDE.md)** 🔧 **HOW TO DEPLOY & MONITOR**
+   - Daily operations checklist
+   - Deploying code changes (step-by-step)
+   - Deploying database migrations (PROVEN method)
+   - Monitoring and health checks
+   - Troubleshooting common issues
+   - Emergency procedures
 
-### 🔧 **Technical Details**
-6. **[AI_PIPELINE_EXPLAINED.md](deploy/AI_PIPELINE_EXPLAINED.md)** - AI/ML architecture
-7. **[HOW_OPTIONS_TRADING_WORKS.md](deploy/HOW_OPTIONS_TRADING_WORKS.md)** - Options primer
-8. **[EXIT_LOGIC_EXPLAINED.md](deploy/EXIT_LOGIC_EXPLAINED.md)** - Position management
-9. **[AWS_BASELINE_RESOURCES.md](deploy/AWS_BASELINE_RESOURCES.md)** - Infrastructure setup
+3. **[CURRENT_STATUS.md](CURRENT_STATUS.md)** 📊 **FEB 6, 2026 STATE**
+   - Current system status (10/11 features = 91%)
+   - What's working, what's not
+   - Recent changes (Feb 4-6)
+   - Trading performance analysis
+   - Open positions and monitoring
+   - Next steps
 
-### 📊 **Analysis & Planning**
-10. **[BEST_IN_CLASS_COMPARISON.md](deploy/BEST_IN_CLASS_COMPARISON.md)** - Gap analysis vs ideal
-11. **[COMPLIANCE_REVIEW.md](deploy/COMPLIANCE_REVIEW.md)** - Regulatory considerations
-12. **[DOCUMENTATION_INDEX.md](deploy/DOCUMENTATION_INDEX.md)** - Complete doc index
+### 📖 **Supporting Documentation**
 
-> **Note:** 34 historical/redundant documents archived to `deploy/archive/historical_docs_2026-01-29/`
+4. **[AI_AGENT_START_HERE.md](AI_AGENT_START_HERE.md)** - AI agent onboarding guide
+5. **[docs/ECS_DOCKER_ARCHITECTURE.md](docs/ECS_DOCKER_ARCHITECTURE.md)** - AWS infrastructure
+6. **[docs/DATABASE_ACCESS_GUIDE.md](docs/DATABASE_ACCESS_GUIDE.md)** - Database queries
+7. **[deploy/RUNBOOK.md](deploy/RUNBOOK.md)** - Additional operations reference
+8. **[deploy/TROUBLESHOOTING_GUIDE.md](deploy/TROUBLESHOOTING_GUIDE.md)** - Problem resolution
+9. **[deploy/AI_PIPELINE_EXPLAINED.md](deploy/AI_PIPELINE_EXPLAINED.md)** - AI/ML details
+
+> **Note:** 35 historical status documents archived to `archive/status_docs_feb_2026/`
 
 ---
 
@@ -266,6 +274,6 @@ For system improvements:
 
 ---
 
-**Last Updated:** 2026-01-29  
-**System Version:** Phase 2 Complete (85%)  
-**Next Milestone:** Phases 3-4 Implementation (A+ Target)
+**Last Updated:** 2026-02-06  
+**System Version:** v16 (91% Complete - Trailing Stops Active)  
+**Next Milestone:** 50 trades for AI learning activation
