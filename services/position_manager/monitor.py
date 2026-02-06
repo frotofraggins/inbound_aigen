@@ -332,6 +332,18 @@ def check_time_based_exits(position: Dict[str, Any]) -> List[Dict[str, Any]]:
     exits = []
     
     try:
+        # CRITICAL FIX 2026-02-06: Close ALL options before market close
+        # Overnight holds caused -52% loss on AMD, 100% failure rate overnight
+        # Data shows: Intraday 40% win rate, Overnight 0% win rate
+        if position['instrument_type'] in ('CALL', 'PUT'):
+            now_et = get_eastern_time()
+            if now_et.time() >= DAY_TRADE_CLOSE_TIME:  # 3:55 PM ET
+                exits.append({
+                    'reason': 'market_close_protection',
+                    'priority': 1,  # HIGH PRIORITY - close before market close!
+                    'message': 'Closing option before market close (avoid overnight gap risk and theta decay)'
+                })
+        
         # Check 1: Day trade time limit (must close by 3:55 PM ET)
         if position['strategy_type'] == 'day_trade':
             now_et = get_eastern_time()
