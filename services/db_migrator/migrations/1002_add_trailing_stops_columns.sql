@@ -1,4 +1,4 @@
--- Minimal version of migration 1002 - just the critical columns for trailing stops
+-- Minimal version of migration 013 - just the critical columns for trailing stops
 -- Can be run via any SQL client or Lambda
 
 -- Add peak_price and trailing_stop_price to active_positions
