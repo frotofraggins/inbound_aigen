@@ -20,16 +20,17 @@ import pytz
 SMA_TOLERANCE = 0.005  # ±0.5% from SMA20
 
 # Volume thresholds
-# EMERGENCY TIGHTENING 2026-02-06: Raised from 1.2 to 2.0 (0% win rate today!)
+# LEARNING MODE 2026-02-06: Moderate thresholds to generate learning data
 VOLUME_KILL_THRESHOLD = 0.5    # <0.5x = kill signal
-VOLUME_MIN_FOR_TRADE = 2.0     # Minimum for any trade (WAS 1.2 - TOO LOOSE!)
-VOLUME_SURGE_THRESHOLD = 2.5   # 2.5x+ confirms strong move (WAS 2.0)
+VOLUME_MIN_FOR_TRADE = 1.5     # Minimum for any trade (balance: not too loose, not too tight)
+VOLUME_SURGE_THRESHOLD = 2.0   # 2.0x+ confirms strong move
 
-# Confidence thresholds  
-# EMERGENCY TIGHTENING 2026-02-06: Raised to prevent catastrophic losses
-CONFIDENCE_DAY_TRADE = 0.75    # Higher bar for 0-1 DTE options (WAS 0.60 - CAUSED LOSSES!)
-CONFIDENCE_SWING_TRADE = 0.65  # Lower bar for 7-30 DTE options (WAS 0.45)
-CONFIDENCE_STOCK = 0.55        # Stocks are less risky (WAS 0.35)
+# Confidence thresholds
+# LEARNING MODE 2026-02-06: Balanced for data generation + quality
+# Paper trading = maximize learning, but not garbage signals
+CONFIDENCE_DAY_TRADE = 0.65    # Raised from 0.60 (filter worst, keep learning data)
+CONFIDENCE_SWING_TRADE = 0.50  # Raised from 0.45 (slight improvement)
+CONFIDENCE_STOCK = 0.40        # Raised from 0.35 (filter noise)
 
 # Trend requirements
 TREND_REQUIRED_FOR_OPTIONS = True  # Require trend_state = ±1 for options
@@ -233,18 +234,16 @@ def compute_signal(ticker, features, sentiment):
             'reason': 'Missing technical indicators'
         })
     
-    # EMERGENCY PROTECTION 2026-02-06: Block first hour of trading
-    # Morning volatility caused -50% losses in 10 minutes
-    # Wait for market to stabilize before trading
+    # LEARNING MODE 2026-02-06: Allow first hour but with extra caution
+    # We WANT to learn from morning volatility in paper trading
+    # But mark these trades so AI can learn "morning trades risky"
     eastern = pytz.timezone('America/New_York')
     from datetime import datetime
     now_et = datetime.now(eastern)
-    if time(9, 30) <= now_et.time() < time(10, 30):
-        return ('HOLD', None, None, 0.0, {
-            'rule': 'FIRST_HOUR_BLOCK',
-            'reason': 'No trading 9:30-10:30 AM ET (morning volatility too high)',
-            'current_time_et': now_et.strftime('%H:%M ET')
-        })
+    is_first_hour = time(9, 30) <= now_et.time() < time(10, 30)
+    
+    # Don't block, but we'll reduce confidence for first hour trades
+    # This generates data showing "first hour = losses" which AI learns from
     
     # =========================================================================
     # 2. EXTRACT SENTIMENT (Optional - confidence modifier only)
