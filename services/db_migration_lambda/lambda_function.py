@@ -1136,6 +1136,28 @@ SET account_name = 'large'
 WHERE account_name IS NULL;
 
 INSERT INTO schema_migrations (version) VALUES ('1001_add_account_name_to_active_positions') ON CONFLICT (version) DO NOTHING;
+""",
+    '1002_add_trailing_stops_columns': """
+-- Migration 1002: Add Trailing Stops Columns
+-- Date: 2026-02-06
+-- Purpose: Enable trailing stop loss feature for protecting profitable positions
+
+ALTER TABLE active_positions 
+ADD COLUMN IF NOT EXISTS peak_price DECIMAL(12, 4),
+ADD COLUMN IF NOT EXISTS trailing_stop_price DECIMAL(12, 4),
+ADD COLUMN IF NOT EXISTS entry_underlying_price DECIMAL(12, 4),
+ADD COLUMN IF NOT EXISTS original_quantity INTEGER;
+
+COMMENT ON COLUMN active_positions.peak_price IS 'Highest price reached during position lifetime (for trailing stops)';
+COMMENT ON COLUMN active_positions.trailing_stop_price IS 'Calculated trailing stop price (locks in 75% of gains)';
+COMMENT ON COLUMN active_positions.entry_underlying_price IS 'Underlying stock price at option entry (for analysis)';
+COMMENT ON COLUMN active_positions.original_quantity IS 'Original quantity before partial exits';
+
+CREATE INDEX IF NOT EXISTS idx_active_positions_peak_price 
+ON active_positions(peak_price) 
+WHERE peak_price IS NOT NULL;
+
+INSERT INTO schema_migrations (version) VALUES ('1002_add_trailing_stops_columns') ON CONFLICT (version) DO NOTHING;
 """
 }
 
