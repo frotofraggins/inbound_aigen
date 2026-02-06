@@ -22,7 +22,14 @@ def load_config():
     secret_data = json.loads(secret_value['SecretString'])
     
     # Load Alpaca credentials from Secrets Manager
-    alpaca_secret = secrets.get_secret_value(SecretId='ops-pipeline/alpaca')
+    # Choose correct account based on ACCOUNT_NAME environment variable
+    account_name = os.environ.get('ACCOUNT_NAME', 'large')
+    if account_name == 'tiny':
+        alpaca_secret_id = 'ops-pipeline/alpaca/tiny'
+    else:
+        alpaca_secret_id = 'ops-pipeline/alpaca'
+    
+    alpaca_secret = secrets.get_secret_value(SecretId=alpaca_secret_id)
     alpaca_data = json.loads(alpaca_secret['SecretString'])
     
     return {
