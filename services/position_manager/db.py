@@ -694,11 +694,15 @@ def create_position_from_alpaca(
     expiration_date: Optional[str] = None,
     stop_loss: Optional[float] = None,
     take_profit: Optional[float] = None,
-    option_symbol: Optional[str] = None
+    option_symbol: Optional[str] = None,
+    account_name: Optional[str] = None
 ) -> int:
     """
     Create a new active position from Alpaca API data
     This is used when syncing positions that weren't logged in dispatch_executions
+    
+    Args:
+        account_name: Account this position belongs to ('large' or 'tiny')
     """
     query = """
     INSERT INTO active_positions (
@@ -714,7 +718,8 @@ def create_position_from_alpaca(
         worst_unrealized_pnl_pct,
         best_unrealized_pnl_dollars,
         worst_unrealized_pnl_dollars,
-        last_mark_price
+        last_mark_price,
+        account_name
     ) VALUES (
         %s, %s, %s,
         %s, %s, %s, NOW(),
@@ -722,6 +727,7 @@ def create_position_from_alpaca(
         %s, %s, %s,
         %s, 'open',
         %s::jsonb,
+        %s,
         %s,
         %s,
         %s,
@@ -756,7 +762,8 @@ def create_position_from_alpaca(
                 0.0,   # worst_unrealized_pnl_pct
                 0.0,   # best_unrealized_pnl_dollars
                 0.0,   # worst_unrealized_pnl_dollars
-                current_price  # last_mark_price
+                current_price,  # last_mark_price
+                account_name or 'large'  # Add account_name with default
             ))
             result = cur.fetchone()
             if result:

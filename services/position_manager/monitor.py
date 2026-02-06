@@ -650,7 +650,9 @@ def sync_from_alpaca_positions() -> int:
                     stop_loss = entry_price * 0.98  # -2% for stock
                     take_profit = entry_price * 1.03  # +3% for stock
                 
-                # Create active_position
+                # Create active_position with correct account name
+                from config import ACCOUNT_NAME
+                
                 position_id = db.create_position_from_alpaca(
                     ticker=ticker,
                     instrument_type=instrument_type,
@@ -662,7 +664,8 @@ def sync_from_alpaca_positions() -> int:
                     expiration_date=exp_date,
                     stop_loss=stop_loss,
                     take_profit=take_profit,
-                    option_symbol=symbol if is_option else None
+                    option_symbol=symbol if is_option else None,
+                    account_name=ACCOUNT_NAME  # Pass correct account name
                 )
                 
                 logger.info(
