@@ -9,6 +9,8 @@ Key principles:
 4. Price move confirmation (breakout/momentum)
 5. Adaptive thresholds by volatility
 """
+from datetime import time
+import pytz
 
 # =============================================================================
 # CONFIGURATION CONSTANTS
@@ -18,14 +20,16 @@ Key principles:
 SMA_TOLERANCE = 0.005  # ±0.5% from SMA20
 
 # Volume thresholds
+# EMERGENCY TIGHTENING 2026-02-06: Raised from 1.2 to 2.0 (0% win rate today!)
 VOLUME_KILL_THRESHOLD = 0.5    # <0.5x = kill signal
-VOLUME_MIN_FOR_TRADE = 1.2     # Minimum for any trade
-VOLUME_SURGE_THRESHOLD = 2.0   # 2x+ confirms strong move
+VOLUME_MIN_FOR_TRADE = 2.0     # Minimum for any trade (WAS 1.2 - TOO LOOSE!)
+VOLUME_SURGE_THRESHOLD = 2.5   # 2.5x+ confirms strong move (WAS 2.0)
 
-# Confidence thresholds
-CONFIDENCE_DAY_TRADE = 0.60    # Higher bar for 0-1 DTE options
-CONFIDENCE_SWING_TRADE = 0.45  # Lower bar for 7-30 DTE options
-CONFIDENCE_STOCK = 0.35        # Stocks are less risky
+# Confidence thresholds  
+# EMERGENCY TIGHTENING 2026-02-06: Raised to prevent catastrophic losses
+CONFIDENCE_DAY_TRADE = 0.75    # Higher bar for 0-1 DTE options (WAS 0.60 - CAUSED LOSSES!)
+CONFIDENCE_SWING_TRADE = 0.65  # Lower bar for 7-30 DTE options (WAS 0.45)
+CONFIDENCE_STOCK = 0.55        # Stocks are less risky (WAS 0.35)
 
 # Trend requirements
 TREND_REQUIRED_FOR_OPTIONS = True  # Require trend_state = ±1 for options
@@ -227,6 +231,19 @@ def compute_signal(ticker, features, sentiment):
         return ('HOLD', None, None, 0.0, {
             'rule': 'NO_FEATURES',
             'reason': 'Missing technical indicators'
+        })
+    
+    # EMERGENCY PROTECTION 2026-02-06: Block first hour of trading
+    # Morning volatility caused -50% losses in 10 minutes
+    # Wait for market to stabilize before trading
+    eastern = pytz.timezone('America/New_York')
+    from datetime import datetime
+    now_et = datetime.now(eastern)
+    if time(9, 30) <= now_et.time() < time(10, 30):
+        return ('HOLD', None, None, 0.0, {
+            'rule': 'FIRST_HOUR_BLOCK',
+            'reason': 'No trading 9:30-10:30 AM ET (morning volatility too high)',
+            'current_time_et': now_et.strftime('%H:%M ET')
         })
     
     # =========================================================================
