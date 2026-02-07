@@ -11,26 +11,26 @@
 
 **Read in this exact order:**
 
-1. **[START_HERE_NEW_AI.md](START_HERE_NEW_AI.md)** ⭐ **READ THIS FIRST** (30 min)
+1. **[docs/START_HERE_NEW_AI.md](docs/START_HERE_NEW_AI.md)** ⭐ **READ THIS FIRST** (30 min)
    - Complete onboarding guide
    - Architecture walkthrough
    - Copy-paste commands
    - Troubleshooting decision trees
    - Common mistakes to avoid
 
-2. **[SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md)** 📚 Technical Reference (20 min)
+2. **[docs/SYSTEM_OVERVIEW.md](docs/SYSTEM_OVERVIEW.md)** 📚 Technical Reference (20 min)
    - Complete architecture details
    - Service descriptions
    - Data flow diagrams
    - Database schema
 
-3. **[OPERATIONS_GUIDE.md](OPERATIONS_GUIDE.md)** 🔧 Operations Manual (15 min)
+3. **[docs/OPERATIONS_GUIDE.md](docs/OPERATIONS_GUIDE.md)** 🔧 Operations Manual (15 min)
    - Deploy code changes
    - Deploy database migrations
    - Monitor and troubleshoot
    - Multi-account configuration
 
-4. **[CURRENT_STATUS.md](CURRENT_STATUS.md)** 📊 Current State (5 min)
+4. **[docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md)** 📊 Current State (5 min)
    - What's working right now
    - Recent changes
    - Known issues
