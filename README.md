@@ -7,19 +7,50 @@
 
 ## 🎯 Quick Start
 
-### For New Users
-1. Read [`AI_AGENT_START_HERE.md`](AI_AGENT_START_HERE.md) - Onboarding guide
-2. Read [`CURRENT_SYSTEM_STATUS.md`](CURRENT_SYSTEM_STATUS.md) - Current state
-3. Read [`deploy/SYSTEM_COMPLETE_GUIDE.md`](deploy/SYSTEM_COMPLETE_GUIDE.md) - Complete overview
+### 🤖 FOR NEW AI/DEVELOPERS (START HERE!)
 
-### For Operations
-- **Deploy/Monitor:** [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md)
-- **Troubleshoot:** [`deploy/TROUBLESHOOTING_GUIDE.md`](deploy/TROUBLESHOOTING_GUIDE.md)
-- **Multi-Account:** [`deploy/MULTI_ACCOUNT_OPERATIONS_GUIDE.md`](deploy/MULTI_ACCOUNT_OPERATIONS_GUIDE.md)
+**Read in this exact order:**
 
-### For Development
-- **Next Features:** [`deploy/NEXT_SESSION_PHASES_3_4.md`](deploy/NEXT_SESSION_PHASES_3_4.md)
-- **Architecture:** [`deploy/AI_PIPELINE_EXPLAINED.md`](deploy/AI_PIPELINE_EXPLAINED.md)
+1. **[START_HERE_NEW_AI.md](START_HERE_NEW_AI.md)** ⭐ **READ THIS FIRST** (30 min)
+   - Complete onboarding guide
+   - Architecture walkthrough
+   - Copy-paste commands
+   - Troubleshooting decision trees
+   - Common mistakes to avoid
+
+2. **[SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md)** 📚 Technical Reference (20 min)
+   - Complete architecture details
+   - Service descriptions
+   - Data flow diagrams
+   - Database schema
+
+3. **[OPERATIONS_GUIDE.md](OPERATIONS_GUIDE.md)** 🔧 Operations Manual (15 min)
+   - Deploy code changes
+   - Deploy database migrations
+   - Monitor and troubleshoot
+   - Multi-account configuration
+
+4. **[CURRENT_STATUS.md](CURRENT_STATUS.md)** 📊 Current State (5 min)
+   - What's working right now
+   - Recent changes
+   - Known issues
+
+**Total: 70 minutes to full competency**
+
+---
+
+### 🚀 For Quick Operations
+
+- **Deploy Code:** See OPERATIONS_GUIDE.md "Deploying Code Changes"
+- **Fix Issues:** See START_HERE_NEW_AI.md "Troubleshooting Decision Tree"
+- **Check Health:** Run commands in START_HERE_NEW_AI.md "Quick Health Check"
+- **Multi-Account:** See OPERATIONS_GUIDE.md "Multi-Account Configuration"
+
+### 📖 For Deep Dives
+
+- **AI/ML Details:** [`deploy/AI_PIPELINE_EXPLAINED.md`](deploy/AI_PIPELINE_EXPLAINED.md)
+- **Architecture:** [`docs/ECS_DOCKER_ARCHITECTURE.md`](docs/ECS_DOCKER_ARCHITECTURE.md)
+- **Trading Strategy:** See SYSTEM_OVERVIEW.md "Trading Strategy"
 
 ---
 
