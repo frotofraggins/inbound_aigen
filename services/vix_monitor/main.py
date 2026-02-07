@@ -14,10 +14,11 @@ import json
 import sys
 from datetime import datetime, timedelta
 import logging
-import yfinance as yf
 import boto3
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockLatestQuoteRequest
 
 # Logging
 logging.basicConfig(
@@ -46,15 +47,21 @@ def load_config():
     db_port = ssm.get_parameter(Name='/ops-pipeline/db_port')['Parameter']['Value']
     db_name = ssm.get_parameter(Name='/ops-pipeline/db_name')['Parameter']['Value']
     
-    secret = secrets.get_secret_value(SecretId='ops-pipeline/db')
-    db_data = json.loads(secret['SecretString'])
+    db_secret = secrets.get_secret_value(SecretId='ops-pipeline/db')
+    db_data = json.loads(db_secret['SecretString'])
+    
+    # Alpaca credentials
+    alpaca_secret = secrets.get_secret_value(SecretId='ops-pipeline/alpaca')
+    alpaca_data = json.loads(alpaca_secret['SecretString'])
     
     return {
         'db_host': db_host,
         'db_port': int(db_port),
         'db_name': db_name,
         'db_user': db_data['username'],
-        'db_password': db_data['password']
+        'db_password': db_data['password'],
+        'alpaca_api_key': alpaca_data['api_key'],
+        'alpaca_api_secret': alpaca_data['api_secret']
     }
 
 def get_db_connection(config):
@@ -67,31 +74,32 @@ def get_db_connection(config):
         password=config['db_password']
     )
 
-def fetch_vix_current():
+def fetch_vix_current(alpaca_api_key, alpaca_api_secret):
     """
-    Fetch current VIX value from Yahoo Finance
+    Fetch current VIX value from Alpaca
     Returns: (vix_value, timestamp)
     """
     try:
-        vix = yf.Ticker("^VIX")
+        # Use Alpaca data client
+        data_client = StockHistoricalDataClient(
+            api_key=alpaca_api_key,
+            secret_key=alpaca_api_secret
+        )
         
-        # Get latest intraday data
-        hist = vix.history(period="1d", interval="1m")
+        # Get latest VIX quote
+        request = StockLatestQuoteRequest(symbol_or_symbols="VIX")
+        quotes = data_client.get_stock_latest_quote(request)
         
-        if hist.empty:
-            # Fallback to daily data
-            hist = vix.history(period="5d")
-            
-        if not hist.empty:
-            latest_close = float(hist['Close'].iloc[-1])
-            latest_time = hist.index[-1]
-            
-            return latest_close, latest_time
+        if "VIX" in quotes:
+            vix_quote = quotes["VIX"]
+            # Use mid-price between bid and ask
+            vix_value = (vix_quote.bid_price + vix_quote.ask_price) / 2
+            return float(vix_value), vix_quote.timestamp
         
         return None, None
         
     except Exception as e:
-        logger.error(f"Error fetching VIX: {e}")
+        logger.error(f"Error fetching VIX from Alpaca: {e}")
         return None, None
 
 def classify_regime(vix_value):
@@ -203,7 +211,10 @@ def main():
         log_event('database_connected', {})
         
         # Fetch current VIX
-        vix_value, vix_time = fetch_vix_current()
+        vix_value, vix_time = fetch_vix_current(
+            config['alpaca_api_key'],
+            config['alpaca_api_secret']
+        )
         
         if vix_value is None:
             logger.error("Failed to fetch VIX value")
