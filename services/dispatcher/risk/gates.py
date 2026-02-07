@@ -281,6 +281,57 @@ def check_max_exposure(
     
     return (True, f"Exposure ${total_notional:.0f}/${max_notional}", total_notional, max_notional)
 
+def check_vix_regime(
+    config: Dict[str, Any]
+) -> GateResult:
+    """
+    VIX regime gate - halt or reduce trading during high volatility.
+    Queries latest VIX assessment from vix_history table.
+    
+    TIER 1 KILL SWITCH - Checked immediately after daily loss limit.
+    """
+    try:
+        import psycopg2
+        
+        # Get database connection from config
+        conn = psycopg2.connect(
+            host=config['db_host'],
+            port=config['db_port'],
+            dbname=config['db_name'],
+            user=config['db_user'],
+            password=config['db_password'],
+            connect_timeout=5
+        )
+        
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT vix_value, regime, new_trades_allowed,
+                       position_size_multiplier, regime_message
+                FROM vix_history
+                ORDER BY recorded_at DESC
+                LIMIT 1
+            """)
+            result = cur.fetchone()
+        
+        conn.close()
+        
+        if not result:
+            # No VIX data - allow trading (permissive)
+            return (True, "No VIX data available (allowing)", None, None)
+        
+        vix_value, regime, new_trades_allowed, size_mult, message = result
+        
+        if not new_trades_allowed:
+            # VIX > 40 - HALT ALL TRADING
+            return (False, f"VIX KILL SWITCH: {regime} regime (VIX {vix_value}) - {message}", vix_value, 40)
+        
+        # VIX allows trading - pass (size adjustment happens separately)
+        return (True, f"VIX {vix_value} - {regime} regime (trades allowed, size {float(size_mult)*100:.0f}%)", vix_value, 40)
+        
+    except Exception as e:
+        # On error, be permissive and allow (log warning)
+        return (True, f"VIX check failed (allowing): {e}", None, None)
+
 def check_trading_hours(
     config: Dict[str, Any]
 ) -> GateResult:
@@ -288,6 +339,8 @@ def check_trading_hours(
     Time-of-day restrictions to prevent trading at open/close.
     - Block: First 5 minutes after open (9:30-9:35 AM ET)
     - Block: Last 15 minutes before close (3:45-4:00 PM ET)
+    
+    TIER 1 KILL SWITCH - Checked after VIX regime.
     """
     # Get current time in ET
     from datetime import datetime
@@ -360,17 +413,23 @@ def evaluate_all_gates(
     action = ACTION_ALIASES.get(action, action)
     instrument = INSTRUMENT_ALIASES.get(instrument, instrument)
     
+    # OPTIMAL GATE ORDERING (Professional fail-fast pattern)
     gates = {
-        # Recommendation-level gates
-        'confidence': check_confidence_gate(recommendation, config),
-        'action_allowed': check_action_allowed(recommendation, config),
-        'recommendation_freshness': check_recommendation_freshness(recommendation, config),
+        # === TIER 1: KILL SWITCHES (Check First) ===
+        'daily_loss_limit': check_daily_loss_limit(daily_pnl, config),
+        'vix_regime': check_vix_regime(config),
+        'trading_hours': check_trading_hours(config),
         
-        # Data freshness gates
+        # === TIER 2: DATA QUALITY ===
         'bar_freshness': check_bar_freshness(bar, config),
         'feature_freshness': check_feature_freshness(features, config),
+        'recommendation_freshness': check_recommendation_freshness(recommendation, config),
         
-        # Ticker-level gates
+        # === TIER 3: ACCOUNT CAPACITY ===
+        'max_positions': check_max_positions(active_position_count, config),
+        'max_exposure': check_max_exposure(total_notional, config),
+        
+        # === TIER 4: TICKER RESTRICTIONS ===
         'ticker_daily_limit': check_ticker_daily_limit(
             recommendation.get('ticker', 'UNKNOWN'),
             ticker_count_today,
@@ -381,19 +440,17 @@ def evaluate_all_gates(
             last_trade_time,
             config
         ),
+        
+        # === TIER 5: SIGNAL QUALITY ===
+        'confidence': check_confidence_gate(recommendation, config),
+        'action_allowed': check_action_allowed(recommendation, config),
         'sell_stock_position': check_sell_stock_has_position(
             recommendation.get('ticker', 'UNKNOWN'),
             action,
             instrument,
             has_open_position,
             config.get('allow_shorting', False)
-        ),
-        
-        # Account-level gates (CRITICAL for risk management)
-        'daily_loss_limit': check_daily_loss_limit(daily_pnl, config),
-        'max_positions': check_max_positions(active_position_count, config),
-        'max_exposure': check_max_exposure(total_notional, config),
-        'trading_hours': check_trading_hours(config)
+        )
     }
     
     # Build gate results dict
