@@ -70,9 +70,9 @@ def main():
         else:
             logger.info("No new positions to create from database")
         
-        # Step 2: Get all open positions
-        logger.info("\nFetching open positions...")
-        open_positions = db.get_open_positions()
+        # Step 2: Get all open positions for THIS account only
+        logger.info(f"\nFetching open positions for account: {ACCOUNT_NAME}")
+        open_positions = db.get_open_positions(account_name=ACCOUNT_NAME)
         
         if not open_positions:
             logger.info("No open positions to monitor")

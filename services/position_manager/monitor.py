@@ -504,13 +504,14 @@ def check_exit_conditions_options(position: Dict[str, Any]) -> List[Dict[str, An
                 'message': f'Option +{option_pnl_pct:.1f}% profit (target +80%)'
             })
         
-        # Exit 2: Option stop loss (-40%, was -25%)
-        # Widened to give premiums room to move with normal volatility
-        if option_pnl_pct <= -40:
+        # Exit 2: Option stop loss (-60%, was -40%)
+        # UPDATED 2026-02-07: Widened based on backtest showing premature exits
+        # Analysis: 5 trades stopped at -40% then recovered to positive within 60 min
+        if option_pnl_pct <= -60:
             exits.append({
                 'reason': 'option_stop_loss',
                 'priority': 1,
-                'message': f'Option {option_pnl_pct:.1f}% loss (stop -40%)'
+                'message': f'Option {option_pnl_pct:.1f}% loss (stop -60%)'
             })
         
         # Exit 3: Time decay risk (theta burn) - only if unprofitable near expiry
@@ -642,10 +643,11 @@ def sync_from_alpaca_positions() -> int:
                 current_price = float(alpaca_pos.current_price)
                 
                 # Calculate stops
-                # CRITICAL FIX (2026-02-04): Widened option stops to match exit logic
+                # UPDATED 2026-02-07: Widened to -60% based on backtest analysis
+                # Backtest showed: 5 trades stopped at -40% then recovered to positive
                 if is_option:
-                    stop_loss = entry_price * 0.60  # -40% for options (was 0.75 = -25%)
-                    take_profit = entry_price * 1.80  # +80% for options (was 1.50 = +50%)
+                    stop_loss = entry_price * 0.40  # -60% for options (was 0.60 = -40%)
+                    take_profit = entry_price * 1.80  # +80% for options
                 else:
                     stop_loss = entry_price * 0.98  # -2% for stock
                     take_profit = entry_price * 1.03  # +3% for stock

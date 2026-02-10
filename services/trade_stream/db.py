@@ -127,7 +127,7 @@ def create_active_position(execution: Dict[str, Any]) -> int:
                 execution.get('expiration_date'),
                 execution['stop_loss'],
                 execution['take_profit'],
-                execution.get('max_hold_minutes', 240),
+                execution.get('max_hold_minutes', 360),  # Updated 2026-02-07: 6 hours (was 240)
                 bool(execution.get('stop_order_id') and execution.get('target_order_id')),
                 execution.get('stop_order_id'),
                 execution.get('target_order_id'),

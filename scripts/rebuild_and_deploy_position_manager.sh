@@ -10,14 +10,14 @@ echo "🔨 Building new Docker image with updated code..."
 cd services/position_manager
 
 # Build image with --no-cache to ensure fresh build
-docker build --no-cache -t 160027201036.dkr.ecr.us-west-2.amazonaws.com/ops-pipeline-position-manager:latest .
+docker build --no-cache -t 160027201036.dkr.ecr.us-west-2.amazonaws.com/ops-pipeline/position-manager:latest .
 
 # Login to ECR
 aws ecr get-login-password --region us-west-2 | \
   docker login --username AWS --password-stdin 160027201036.dkr.ecr.us-west-2.amazonaws.com
 
 # Push image
-docker push 160027201036.dkr.ecr.us-west-2.amazonaws.com/ops-pipeline-position-manager:latest
+docker push 160027201036.dkr.ecr.us-west-2.amazonaws.com/ops-pipeline/position-manager:latest
 
 echo "✅ Docker image pushed to ECR"
 

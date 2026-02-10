@@ -1,0 +1,30 @@
+{
+  "family": "ops-pipeline-position-reconciler",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::160027201036:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::160027201036:role/ecsTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "position-reconciler",
+      "image": "160027201036.dkr.ecr.us-west-2.amazonaws.com/ops-pipeline/position-reconciler:latest",
+      "essential": true,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/ops-pipeline/position-reconciler",
+          "awslogs-region": "us-west-2",
+          "awslogs-stream-prefix": "reconciler"
+        }
+      },
+      "environment": [
+        {
+          "name": "AWS_DEFAULT_REGION",
+          "value": "us-west-2"
+        }
+      ]
+    }
+  ]
+}

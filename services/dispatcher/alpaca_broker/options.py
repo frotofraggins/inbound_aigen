@@ -332,12 +332,13 @@ def select_optimal_strike(
     for contract in filtered:
         quality_score = calculate_contract_quality_score(contract, target_strike)
         
-        # Only consider contracts with score >= 40 (minimum acceptable)
-        if quality_score >= 40:
+        # PROFESSIONAL STANDARD: Only consider contracts with score >= 70 (2026-02-09)
+        # Changed from 40 (failing grade) to 70 (professional standard)
+        if quality_score >= 70:
             scored_contracts.append((quality_score, contract))
     
     if not scored_contracts:
-        print(f"No contracts passed quality threshold (score >= 40)")
+        print(f"No contracts passed quality threshold (score >= 70/100 professional standard)")
         return None
     
     # Sort by quality score (highest first)
@@ -444,16 +445,18 @@ def validate_option_contract(
 
 def validate_option_liquidity(
     contract: Dict[str, Any],
-    min_volume: int = 10,  # LOWERED FOR TESTING: Was 200, now 10
-    max_spread_pct: float = 10.0
+    min_volume: int = 500,  # PROFESSIONAL STANDARD: Raised from 10 to 500 (2026-02-09)
+    max_spread_pct: float = 5.0  # PROFESSIONAL STANDARD: Tightened from 10% to 5% (2026-02-09)
 ) -> Tuple[bool, str]:
     """
-    Validate option contract liquidity.
+    Validate option contract liquidity with PROFESSIONAL standards.
     
-    PHASE 1 + 2 CHANGES:
-    - Fixed spread calc: use MID not BID as denominator
-    - Added minimum premium check ($0.30+)
-    - PHASE 2: Minimum volume raised to 200
+    CRITICAL FIXES (2026-02-09):
+    - Raised min_volume from 10 to 500 (eliminates illiquid contracts)
+    - Tightened max_spread from 10% to 5% (prevents massive slippage)
+    - Raised min_premium from $0.30 to $1.00 (no lottery tickets)
+    
+    These changes prevent catastrophic losses like CRM -86%.
     
     Returns:
         Tuple of (is_valid, reason)
@@ -472,12 +475,12 @@ def validate_option_liquidity(
     if spread_pct > max_spread_pct:
         return False, f"Spread too wide: {spread_pct:.1f}% > {max_spread_pct}%"
     
-    # Minimum premium check (avoid lottery tickets)
-    min_premium = 0.30  # $0.30 per share = $30 per contract
+    # PROFESSIONAL STANDARD: Minimum premium check (avoid lottery tickets)
+    min_premium = 1.00  # RAISED from $0.30 to $1.00 (2026-02-09)
     if mid < min_premium:
         return False, f"Premium too low: ${mid:.2f} < ${min_premium:.2f} (likely worthless)"
     
-    # PHASE 2: Minimum volume check
+    # PROFESSIONAL STANDARD: Minimum volume check
     volume = int(contract.get('volume', 0))
     if volume < min_volume:
         return False, f"Volume too low: {volume} < {min_volume} (insufficient liquidity)"

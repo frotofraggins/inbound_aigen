@@ -192,5 +192,5 @@ def load_config() -> Dict[str, Any]:
         # Stop loss / Take profit parameters
         'stop_loss_atr_mult': dispatcher_config.get('stop_loss_atr_mult', 2.0),
         'take_profit_risk_reward': dispatcher_config.get('take_profit_risk_reward', 2.0),
-        'max_hold_minutes': dispatcher_config.get('max_hold_minutes', 240),  # 4 hours default
+        'max_hold_minutes': dispatcher_config.get('max_hold_minutes', 360),  # 6 hours default (updated 2026-02-07 based on backtest)
     }

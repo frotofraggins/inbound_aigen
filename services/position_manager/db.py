@@ -166,7 +166,7 @@ def create_active_position(execution: Dict[str, Any]) -> int:
                 execution.get('expiration_date'),
                 execution['stop_loss'],
                 execution['take_profit'],
-                execution.get('max_hold_minutes', 240),
+                execution.get('max_hold_minutes', 360),  # Updated 2026-02-07: 6 hours (was 240)
                 bool(execution.get('stop_order_id') and execution.get('target_order_id')),
                 execution.get('stop_order_id'),
                 execution.get('target_order_id'),
@@ -187,32 +187,58 @@ def create_active_position(execution: Dict[str, Any]) -> int:
             return position_id
 
 
-def get_open_positions() -> List[Dict[str, Any]]:
+def get_open_positions(account_name: Optional[str] = None) -> List[Dict[str, Any]]:
     """
-    Get all currently open positions
+    Get all currently open positions, optionally filtered by account
+    
+    Args:
+        account_name: Filter by account name ('large', 'tiny', or None for all)
     """
-    query = """
-    SELECT 
-        id, execution_id, execution_uuid, ticker, instrument_type, strategy_type,
-        side, quantity, entry_price, entry_time,
-        strike_price, expiration_date,
-        stop_loss, take_profit, max_hold_minutes,
-        bracket_order_accepted, stop_order_id, target_order_id,
-        current_price, current_pnl_dollars, current_pnl_percent,
-        entry_features_json, entry_iv_rank, entry_spread_pct,
-        best_unrealized_pnl_pct, worst_unrealized_pnl_pct,
-        best_unrealized_pnl_dollars, worst_unrealized_pnl_dollars,
-        last_mark_price, option_symbol,
-        last_checked_at, check_count,
-        status, created_at
-    FROM active_positions
-    WHERE status = 'open'
-    ORDER BY entry_time ASC
-    """
+    if account_name:
+        query = """
+        SELECT 
+            id, execution_id, execution_uuid, ticker, instrument_type, strategy_type,
+            side, quantity, entry_price, entry_time,
+            strike_price, expiration_date,
+            stop_loss, take_profit, max_hold_minutes,
+            bracket_order_accepted, stop_order_id, target_order_id,
+            current_price, current_pnl_dollars, current_pnl_percent,
+            entry_features_json, entry_iv_rank, entry_spread_pct,
+            best_unrealized_pnl_pct, worst_unrealized_pnl_pct,
+            best_unrealized_pnl_dollars, worst_unrealized_pnl_dollars,
+            last_mark_price, option_symbol,
+            last_checked_at, check_count,
+            status, created_at, account_name
+        FROM active_positions
+        WHERE status = 'open'
+          AND account_name = %s
+        ORDER BY entry_time ASC
+        """
+        params = (account_name,)
+    else:
+        query = """
+        SELECT 
+            id, execution_id, execution_uuid, ticker, instrument_type, strategy_type,
+            side, quantity, entry_price, entry_time,
+            strike_price, expiration_date,
+            stop_loss, take_profit, max_hold_minutes,
+            bracket_order_accepted, stop_order_id, target_order_id,
+            current_price, current_pnl_dollars, current_pnl_percent,
+            entry_features_json, entry_iv_rank, entry_spread_pct,
+            best_unrealized_pnl_pct, worst_unrealized_pnl_pct,
+            best_unrealized_pnl_dollars, worst_unrealized_pnl_dollars,
+            last_mark_price, option_symbol,
+            last_checked_at, check_count,
+            status, created_at, account_name
+        FROM active_positions
+        WHERE status = 'open'
+        ORDER BY entry_time ASC
+        """
+        params = ()
     
     with DatabaseConnection() as db:
         with db.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(query)
+            cur.execute(query, params)
             results = cur.fetchall()
             return [dict(row) for row in results]
 
