@@ -1,0 +1,4 @@
+# file: /workplace/nflos/inbound_aigen/services/position_manager/earnings_client.py
+# hypothesis_version: 6.151.6
+
+[200, 'APCA-API-KEY-ID', 'APCA-API-SECRET-KEY', 'Earnings', 'after', 'after_close', 'amc', 'before', 'before_open', 'bmo', 'date', 'date_from', 'date_to', 'earnings', 'ex_date', 'symbols', 'timing', 'types']

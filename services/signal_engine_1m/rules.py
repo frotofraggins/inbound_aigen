@@ -74,14 +74,10 @@ def get_volume_multiplier(volume_ratio):
         return (0.3, f"WEAK_VOLUME (ratio {volume_ratio:.2f}, reduced 70%)")
     
     # Below average: reduce moderately
-    if volume_ratio < 1.5:
-        return (0.6, f"BELOW_AVG_VOLUME (ratio {volume_ratio:.2f}, reduced 40%)")
-    
-    # Good volume: no adjustment
     if volume_ratio < VOLUME_SURGE_THRESHOLD:
-        return (1.0, f"GOOD_VOLUME (ratio {volume_ratio:.2f})")
+        return (0.8, f"BELOW_SURGE_VOLUME (ratio {volume_ratio:.2f}, reduced 20%)")
     
-    # Strong volume: boost confidence
+    # Good volume (at surge threshold): no adjustment
     if volume_ratio < 3.0:
         return (1.15, f"STRONG_VOLUME (ratio {volume_ratio:.2f}, boosted 15%)")
     
@@ -451,30 +447,37 @@ def compute_signal(ticker, features, sentiment):
         elif confidence >= CONFIDENCE_SWING_TRADE:
             strategy_type = 'swing_trade'  # 7-30 DTE
         else:
-            # Confidence too low for options
-            instrument = 'STOCK'
-            strategy_type = None
+            # Confidence too low for options — HOLD instead of falling back to stock
+            # FIX 2026-02-12: Stock fallback caused $25K DE stock purchase on options-only account
+            return ('HOLD', None, None, confidence, {
+                'rule': 'OPTIONS_CONFIDENCE_TOO_LOW',
+                'reason': f'Confidence {confidence:.3f} too low for options, stock fallback disabled',
+                'direction': primary_direction,
+                'trend_state': trend_state,
+                'can_trade_options': can_trade_options
+            })
     else:
-        # No options: weak trend, high vol, or other reason
-        instrument = 'STOCK'
-        strategy_type = None
+        # No options: weak trend, high vol, or other reason — HOLD
+        # FIX 2026-02-12: Stock signals disabled — this is an options-only system
+        return ('HOLD', None, None, confidence, {
+            'rule': 'NO_OPTIONS_SETUP',
+            'reason': 'Weak trend or high vol — options not appropriate, stock fallback disabled',
+            'direction': primary_direction,
+            'trend_state': trend_state,
+            'can_trade_options': can_trade_options,
+            'vol_regime': 'normal' if vol_normal else ('high' if vol_high else 'compressed')
+        })
     
-    # Set action based on final instrument
-    if instrument in ('CALL', 'PUT'):
-        action = 'BUY'  # Always BUY for options
-    else:
-        action = 'BUY' if primary_direction == "BULL" else 'SELL'
+    # Set action — always BUY for options (only path remaining after stock fallback removed)
+    action = 'BUY'
     
     # Check if confidence meets minimum threshold
-    if instrument in ('CALL', 'PUT'):
-        if strategy_type == 'day_trade':
-            min_confidence = adaptive_threshold if adaptive_threshold else CONFIDENCE_DAY_TRADE
-        elif strategy_type == 'swing_trade':
-            min_confidence = CONFIDENCE_SWING_TRADE
-        else:
-            min_confidence = CONFIDENCE_STOCK
+    if strategy_type == 'day_trade':
+        min_confidence = adaptive_threshold if adaptive_threshold else CONFIDENCE_DAY_TRADE
+    elif strategy_type == 'swing_trade':
+        min_confidence = CONFIDENCE_SWING_TRADE
     else:
-        min_confidence = CONFIDENCE_STOCK
+        min_confidence = CONFIDENCE_SWING_TRADE  # Fallback
     
     # Below threshold = HOLD
     if confidence < min_confidence:
@@ -583,9 +586,7 @@ def compute_signal(ticker, features, sentiment):
         
         'options_note': (
             f'Day trade (0-1 DTE): High confidence ({adaptive_threshold:.2f}) + volume surge' if strategy_type == 'day_trade'
-            else 'Swing trade (7-30 DTE): Moderate confidence' if strategy_type == 'swing_trade'
-            else 'Stock: Lower risk (weak trend or high vol)' if instrument == 'STOCK'
-            else None
+            else 'Swing trade (7-30 DTE): Moderate confidence'
         )
     }
     

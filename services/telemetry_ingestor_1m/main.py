@@ -147,17 +147,15 @@ def main():
                 tickers_failed=tickers_failed,
                 tickers_total=len(config['tickers']))
         
-        # Exit with success
-        sys.exit(0)
+        # Return normally - let the outer loop handle sleep/retry
+        return result
         
     except Exception as e:
         error_msg = str(e)
         log("telemetry_run_failed",
             error=error_msg,
             error_type=type(e).__name__)
-        
-        # Exit with failure
-        sys.exit(1)
+        raise  # Re-raise so the outer loop can catch and retry
 
 if __name__ == '__main__':
     import time
@@ -171,13 +169,13 @@ if __name__ == '__main__':
         main()
     else:
         log("telemetry_mode", mode="LOOP")
-        log("telemetry_interval", interval="60 seconds")
+        log("telemetry_interval", interval="180 seconds (3 min to avoid rate limits)")
         
         while True:
             try:
                 main()
-                log("telemetry_sleep", seconds=60)
-                time.sleep(60)  # 1 minute
+                log("telemetry_sleep", seconds=180)
+                time.sleep(180)  # 3 minutes (reduced from 1 min to avoid rate limits)
             except KeyboardInterrupt:
                 log("telemetry_shutdown", reason="keyboard_interrupt")
                 break

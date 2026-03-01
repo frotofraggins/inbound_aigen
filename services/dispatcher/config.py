@@ -15,7 +15,7 @@ ACCOUNT_TIERS = {
         'risk_pct_day': 0.15,      # 15% - balanced for small accounts
         'risk_pct_swing': 0.08,    # 8%
         'max_contracts': 1,
-        'min_confidence': 0.45,    # Align with swing threshold to allow tiny to trade
+        'min_confidence': 0.55,    # Raised from 0.45 — sub-0.55 trades avg -17.5% (Feb 11 analysis)
         'min_volume_ratio': 2.0     # Volume surge required
     },
     'small': {
@@ -39,7 +39,7 @@ ACCOUNT_TIERS = {
         'risk_pct_day': 0.01,      # 1% - professional
         'risk_pct_swing': 0.02,    # 2%
         'max_contracts': 10,
-        'min_confidence': 0.45,
+        'min_confidence': 0.55,    # Raised from 0.45 — sub-0.55 trades avg -17.5% (Feb 11 analysis)
         'min_volume_ratio': 1.2
     }
 }
@@ -162,9 +162,10 @@ def load_config() -> Dict[str, Any]:
         'max_feature_age_seconds': dispatcher_config.get('max_feature_age_seconds', 300),
         
         # Allowed actions (block certain types in production)
+        # CRITICAL FIX 2026-02-12: Removed BUY_STOCK from default — options-only system
+        # Stock trades were slipping through when SSM config failed to load (DE bought 40 shares at $622)
         'allowed_actions': dispatcher_config.get('allowed_actions', [
-            'BUY_CALL', 'BUY_PUT', 'BUY_STOCK'
-            # 'SELL_PREMIUM' blocked until we add proper risk controls
+            'BUY_CALL', 'BUY_PUT'
         ]),
         'allow_shorting': dispatcher_config.get('allow_shorting', False),
 
@@ -193,4 +194,15 @@ def load_config() -> Dict[str, Any]:
         'stop_loss_atr_mult': dispatcher_config.get('stop_loss_atr_mult', 2.0),
         'take_profit_risk_reward': dispatcher_config.get('take_profit_risk_reward', 2.0),
         'max_hold_minutes': dispatcher_config.get('max_hold_minutes', 360),  # 6 hours default (updated 2026-02-07 based on backtest)
+        
+        # Trading hours — strategy-specific entry cutoffs (R4)
+        'last_entry_hour_et': dispatcher_config.get('last_entry_hour_et', 15),  # Legacy: No new entries after 3 PM ET
+        'last_entry_hour_et_day_trade': dispatcher_config.get(
+            'last_entry_hour_et_day_trade',
+            13 if account_tier == 'tiny' else 14  # R7.4: tiny=1PM, large=2PM
+        ),
+        'last_entry_hour_et_swing_trade': dispatcher_config.get(
+            'last_entry_hour_et_swing_trade',
+            14 if account_tier == 'tiny' else 15  # R7.4: tiny=2PM, large=3PM
+        ),
     }

@@ -399,6 +399,42 @@ def close_position(
             db.conn.commit()
             logger.info(f"Position {position_id} closed: {close_reason}")
 
+def cleanup_stuck_closing(account_name: str, max_age_minutes: int = 30) -> int:
+    """
+    Clean up positions stuck in 'closing' status for too long.
+    These are created when close order submission fails and the position
+    stays in 'closing' forever. Marks them as closed with a cleanup reason.
+
+    Args:
+        account_name: Account to clean up
+        max_age_minutes: Only clean up positions stuck longer than this
+
+    Returns: Number of positions cleaned up
+    """
+    query = """
+    UPDATE active_positions
+    SET status = 'closed',
+        close_reason = 'cleanup_stuck_closing',
+        closed_at = NOW(),
+        updated_at = NOW()
+    WHERE account_name = %s
+      AND status = 'closing'
+      AND updated_at < NOW() - INTERVAL '%s minutes'
+    RETURNING id, ticker
+    """
+
+    with DatabaseConnection() as db_conn:
+        with db_conn.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(query, (account_name, max_age_minutes))
+            cleaned = cur.fetchall()
+            db_conn.conn.commit()
+
+            for row in cleaned:
+                logger.info(f"Cleaned up stuck closing position {row['id']} ({row['ticker']})")
+
+            return len(cleaned)
+
+
 
 def update_position_quantity(position_id: int, quantity: float) -> None:
     """
@@ -677,34 +713,62 @@ def get_historical_trade_stats(account_tier: str, days: int = 30) -> Dict[str, f
 
 # Phase 3: Alpaca sync helper functions
 
-def get_position_by_symbol(symbol: str) -> Optional[Dict[str, Any]]:
+def get_position_by_symbol(symbol: str, account_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     Get an active position by its ticker or option symbol
     Used to check if we're already tracking a position from Alpaca
+
+    Args:
+        symbol: Ticker or option symbol to look up
+        account_name: Filter by account name to avoid cross-account collisions
     """
-    query = """
-    SELECT 
-        id, execution_id, execution_uuid, ticker, instrument_type, strategy_type,
-        side, quantity, entry_price, entry_time,
-        strike_price, expiration_date, option_symbol,
-        stop_loss, take_profit, max_hold_minutes,
-        bracket_order_accepted, stop_order_id, target_order_id,
-        current_price, current_pnl_dollars, current_pnl_percent,
-        entry_features_json, entry_iv_rank, entry_spread_pct,
-        best_unrealized_pnl_pct, worst_unrealized_pnl_pct,
-        best_unrealized_pnl_dollars, worst_unrealized_pnl_dollars,
-        last_mark_price,
-        status, created_at
-    FROM active_positions
-    WHERE (ticker = %s OR option_symbol = %s)
-      AND status = 'open'
-    ORDER BY entry_time DESC
-    LIMIT 1
-    """
-    
+    if account_name:
+        query = """
+        SELECT
+            id, execution_id, execution_uuid, ticker, instrument_type, strategy_type,
+            side, quantity, entry_price, entry_time,
+            strike_price, expiration_date, option_symbol,
+            stop_loss, take_profit, max_hold_minutes,
+            bracket_order_accepted, stop_order_id, target_order_id,
+            current_price, current_pnl_dollars, current_pnl_percent,
+            entry_features_json, entry_iv_rank, entry_spread_pct,
+            best_unrealized_pnl_pct, worst_unrealized_pnl_pct,
+            best_unrealized_pnl_dollars, worst_unrealized_pnl_dollars,
+            last_mark_price,
+            status, created_at
+        FROM active_positions
+        WHERE (ticker = %s OR option_symbol = %s)
+          AND status IN ('open', 'closing')
+          AND account_name = %s
+        ORDER BY entry_time DESC
+        LIMIT 1
+        """
+        params = (symbol, symbol, account_name)
+    else:
+        query = """
+        SELECT
+            id, execution_id, execution_uuid, ticker, instrument_type, strategy_type,
+            side, quantity, entry_price, entry_time,
+            strike_price, expiration_date, option_symbol,
+            stop_loss, take_profit, max_hold_minutes,
+            bracket_order_accepted, stop_order_id, target_order_id,
+            current_price, current_pnl_dollars, current_pnl_percent,
+            entry_features_json, entry_iv_rank, entry_spread_pct,
+            best_unrealized_pnl_pct, worst_unrealized_pnl_pct,
+            best_unrealized_pnl_dollars, worst_unrealized_pnl_dollars,
+            last_mark_price,
+            status, created_at
+        FROM active_positions
+        WHERE (ticker = %s OR option_symbol = %s)
+          AND status IN ('open', 'closing')
+        ORDER BY entry_time DESC
+        LIMIT 1
+        """
+        params = (symbol, symbol)
+
     with DatabaseConnection() as db:
         with db.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(query, (symbol, symbol))
+            cur.execute(query, params)
             result = cur.fetchone()
             return dict(result) if result else None
 

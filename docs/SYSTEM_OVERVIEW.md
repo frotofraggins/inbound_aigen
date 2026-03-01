@@ -1,6 +1,6 @@
 # Inbound AI Options Trading System - Complete Overview
-**Last Updated:** February 6, 2026, 19:50 UTC  
-**System Version:** v16 (91% Complete)  
+**Last Updated:** February 11, 2026  
+**System Version:** v17 (EOD Engine + Learning Pipeline)  
 **Status:** Production-Ready, Paper Trading Active
 
 ---
@@ -35,9 +35,10 @@ An AI-powered options trading system that:
 
 **Current Performance:**
 - **Accounts:** 2 (large $121K, tiny $1K)
-- **Trades:** 13 closed positions analyzed
-- **Win Rate:** 23% (before trailing stops), expected 50-60% after
+- **Trades:** 35+ closed positions analyzed
+- **Win Rate:** Improving (trailing stops + EOD engine active)
 - **Services:** 11 components, 10 working (91%)
+- **Learning Pipeline:** Fully automated (Trade Analyzer → Learning Applier → SSM updates)
 
 ---
 
@@ -112,10 +113,14 @@ Run 24/7 in ECS:
 3. **position-manager-service** (large)
    - Monitors open positions every minute
    - Tracks P&L, peak gains, trailing stops
-   - Automatic exits: stop loss, take profit, time limits
+   - EOD Exit Engine: graduated close windows, theta scoring, VIX regime, earnings calendar
+   - Close-Loop Monitor: detects stuck closes, retries, queues for next open
+   - Overnight outcome logging for learning pipeline
+   - Key modules: `monitor.py`, `exits.py`, `eod_engine.py`, `eod_config.py`, `eod_models.py`, `close_loop.py`, `earnings_client.py`
 
 4. **position-manager-tiny-service** (tiny)
-   - Same monitoring for tiny account
+   - Same monitoring + EOD engine for tiny account
+   - Tighter overnight hold thresholds (15% P&L, $200 exposure limit)
 
 5. **telemetry-service**
    - Captures 1-minute market data from Alpaca
@@ -128,6 +133,27 @@ Run 24/7 in ECS:
 
 ### Scheduled Tasks (5)
 Run on EventBridge schedules:
+
+### One-Shot Tasks
+Run manually or on-demand:
+
+1. **trade-analyzer** (ops-pipeline-trade-analyzer:1)
+   - Statistical analysis of trade outcomes
+   - Joins position_history → dispatch_executions → dispatch_recommendations
+   - Analyzes: instrument bias, confidence thresholds, volume surge impact, exit reasons, trend alignment, volatility
+   - Writes findings to `learning_recommendations` table (status='pending')
+   - Never auto-applies changes — human review required
+   - Run after market close or when trade count increases significantly
+
+2. **learning-applier** (ops-pipeline-learning-applier:1)
+   - Reads pending `learning_recommendations`
+   - Uses Bedrock Claude 3.5 Sonnet to evaluate each finding
+   - SSM-configurable params: auto-applies if AI approves (saves rollback value)
+   - Code-level params: marks as 'ai_approved' for human deploy
+   - Pre-filters: rejects if sample_size < 10 or confidence < 0.5
+   - Scheduled 15 min after trade-analyzer
+
+### Scheduled Tasks (continued)
 
 7. **signal-engine-1m** (every minute)
    - Version 16: Momentum urgency + gap fade
@@ -249,13 +275,14 @@ Services don't talk to each other directly. They use the database:
 ```
 Signal Engine → Writes to dispatch_recommendations
      ↓
-Dispatcher → Reads from dispatch_recommendations
-     ↓
+Dispatcher → Reads unprocessed recommendations (non-exclusive, filtered by account_name)
+     ↓                  Both dispatchers can process the same recommendation independently.
+     ↓                  Idempotency enforced by UNIQUE(recommendation_id, account_name).
 Dispatcher → Writes to dispatch_executions
      ↓
 Position Manager → Reads from active_positions
      ↓
-Position Manager → Updates active_positions
+Position Manager → Updates active_positions (live option quotes from Market Data API)
      ↓
 On close → Writes to position_history
 ```
@@ -291,7 +318,9 @@ On close → Writes to position_history
 
 **Secrets:**
 - Secrets Manager: Alpaca API keys
-- Secret ARN: `arn:aws:secretsmanager:us-west-2:160027201036:secret:ops-pipeline/alpaca-api-keys-*`
+- `ops-pipeline/alpaca` — Large account (account_name: large-100k)
+- `ops-pipeline/alpaca/large` — Same (dispatcher loads by tier name)
+- `ops-pipeline/alpaca/tiny` — Tiny account
 
 **Logging:**
 - CloudWatch Logs
@@ -310,10 +339,11 @@ On close → Writes to position_history
 - Python 3.11 (all services)
 
 **Key Libraries:**
-- `alpaca-py` 0.21.0 - Alpaca API client
+- `alpaca-py` 0.43.2 - Alpaca API client
 - `psycopg2` - PostgreSQL driver
 - `transformers` + `torch` - FinBERT sentiment
 - `boto3` - AWS SDK
+- `requests` - Alpaca Market Data API (option quotes)
 - `pandas`, `numpy` - Data processing
 
 **AWS Services:**
@@ -379,11 +409,30 @@ On close → Writes to position_history
 ### Exit Strategy
 
 **Take Profit:** +80% gain
-**Stop Loss:** -40% loss
-**Trailing Stops:** Lock 75% of peak gains (NOW ACTIVE as of Feb 6)
-**Time Stop:** 4 hours for day trades
-**Market Close Protection:** All options close at 3:55 PM ET
-**Catastrophic Exit:** -50% override (emergency)
+**Stop Loss:** -40% loss (widened from -40% based on backtest)
+**Trailing Stops:** Lock 75% of peak gains (active since Feb 6)
+**Time Stop:** 4 hours for day trades (max_hold_minutes)
+
+**EOD Exit Engine (NEW — Feb 11):**
+Replaces the blanket 3:55 PM force-close with a strategy-aware, P&L-aware system:
+
+- **Graduated Close Windows:** 4 evaluation checkpoints (2:30, 3:00, 3:30, 3:55 PM ET) with progressively stricter criteria
+- **Strategy Routing:** Day trades close at final window; swing trades evaluated against overnight hold criteria
+- **Overnight Hold Criteria:** Swing trades can hold overnight if they pass DTE (≥3), P&L (≥10%), and position size (≤5% of equity) checks
+- **Theta Scoring:** High theta decay (>5% daily premium loss) lowers P&L threshold; DTE ≤2 + high theta forces close
+- **VIX Regime Adjustment:** Elevated VIX tightens P&L threshold (1.5x); high VIX tightens further (2x) and halves exposure; extreme VIX forces close all
+- **Earnings Calendar:** Positions with earnings within 1 trading day are force-closed
+- **Overnight Exposure Limit:** Aggregate overnight notional capped ($5K large, $200 tiny); least profitable closed first
+- **Close-Loop Monitor:** Detects stuck closing positions, retries once, queues for next open if market closed
+- **Duplicate Prevention:** One position per ticker/account/instrument type enforced
+
+**Entry Cutoff Gates (NEW — Feb 11):**
+- Day trade cutoff: 2 PM ET (large), 1 PM ET (tiny)
+- Swing trade cutoff: 3 PM ET (large), 2 PM ET (tiny)
+- After-hours blocking: No entries outside 9:30 AM - 4:00 PM ET
+- Duplicate position blocking: No new position if ticker already open/closing
+
+All EOD parameters are SSM-configurable (JSON in Parameter Store) per account tier.
 
 ---
 
@@ -407,6 +456,12 @@ On close → Writes to position_history
 - Max loss per day: -10% of account
 - Max positions: 5 concurrent
 - Ticker cooldown: 30 minutes after close
+
+**Entry Cutoff Gates (NEW — Feb 11):**
+- Day trade cutoff: 2 PM ET (large), 1 PM ET (tiny)
+- Swing trade cutoff: 3 PM ET (large), 2 PM ET (tiny)
+- After-hours blocking: No entries outside 9:30 AM - 4:00 PM ET
+- Duplicate position blocking: No new position if ticker already open/closing
 
 **Quality Filters:**
 - Contract bid/ask spread < 10%
@@ -461,6 +516,19 @@ On close → Writes to position_history
 - FinBERT sentiment scores
 - Article timestamps, sources
 
+**8. position_events** (expanded Feb 11)
+- `eod_decision` — full EOD evaluation per position (strategy, P&L, theta, VIX, window, criteria)
+- `overnight_hold` — positions qualifying for overnight hold with criteria snapshot
+- `overnight_outcome` — next-day open vs previous close P&L for held positions
+- `close_retry` — stuck position retry attempts
+- `close_failed` — positions requiring manual review
+- `duplicate_cleanup` — duplicate position cleanup events
+
+**9. learning_recommendations**
+- Trade Analyzer statistical findings
+- Bedrock Claude AI review decisions
+- SSM parameter change history
+
 ---
 
 ## System Capabilities
@@ -479,9 +547,8 @@ On close → Writes to position_history
 
 1. **No news WebSocket** - alpaca-py limitation
 2. **No Greeks analysis** - IV, delta, gamma (planned)
-3. **No earnings calendar** - doesn't avoid earnings
-4. **1-minute granularity** - not high-frequency
-5. **Paper trading only** - real money requires compliance
+3. **1-minute granularity** - not high-frequency
+4. **Paper trading only** - real money requires compliance
 
 ### 🚀 Planned Improvements
 
@@ -495,25 +562,26 @@ On close → Writes to position_history
 
 ## Performance Metrics
 
-**As of February 6, 2026:**
+**As of February 11, 2026:**
 
 **System Health:**
 - Services running: 10/11 (91%)
 - Uptime: 99.9%
-- Signal generation: 1-2 per minute
+- Signal generation: 1-4 per minute
 - Execution latency: <5 seconds
+- Learning pipeline: Fully automated (daily)
 
 **Trading Performance:**
-- Closed trades: 13
-- Win rate: 23% (pre-trailing stops)
-- Expected with trailing stops: 50-60%
+- Closed trades: 35+
+- Win rate: Improving (trailing stops + EOD engine active)
 - Best winner: +84% (GOOGL)
 - Worst loser: -52% (AMD)
+- Learning: Automated daily analysis + AI-reviewed parameter tuning
 
 **Data Quality:**
-- Market data: 28/28 tickers OK
+- Market data: 39/39 tickers OK
 - Feature computation: 100% success rate
-- Position tracking: 0 errors
+- Position tracking: Live option quotes via Market Data API
 - Learning data: 100% capture rate
 
 ---

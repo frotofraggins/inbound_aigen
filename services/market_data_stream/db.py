@@ -152,6 +152,34 @@ def check_cooldown(conn, ticker, cooldown_minutes=15):
         
         return cur.fetchone()[0]
 
+def insert_bar(conn, bar_data):
+    """
+    Insert a bar into lane_telemetry table.
+    
+    Args:
+        bar_data: dict with keys: ticker, ts, open, high, low, close, volume
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO lane_telemetry (ticker, ts, open, high, low, close, volume)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (ticker, ts) DO UPDATE SET
+                open = EXCLUDED.open,
+                high = EXCLUDED.high,
+                low = EXCLUDED.low,
+                close = EXCLUDED.close,
+                volume = EXCLUDED.volume
+        """, (
+            bar_data['ticker'],
+            bar_data['ts'],
+            bar_data['open'],
+            bar_data['high'],
+            bar_data['low'],
+            bar_data['close'],
+            bar_data['volume']
+        ))
+        conn.commit()
+
 def insert_recommendation(conn, ticker, action, instrument_type, strategy_type, confidence, reason, features_snapshot=None, sentiment_snapshot=None):
     """
     Insert a new trading recommendation.

@@ -714,7 +714,8 @@ Services use the `ACCOUNT_NAME` environment variable to determine which Alpaca a
 **Two separate Alpaca API key secrets:**
 
 ```
-ops-pipeline/alpaca       → Large account credentials
+ops-pipeline/alpaca       → Large account credentials (account_name: large-100k)
+ops-pipeline/alpaca/large → Same credentials (created Feb 11 so dispatcher finds by tier)
 ops-pipeline/alpaca/tiny  → Tiny account credentials
 ```
 
@@ -727,11 +728,16 @@ account_name = os.environ.get('ACCOUNT_NAME', 'large')
 if account_name == 'tiny':
     alpaca_secret_id = 'ops-pipeline/alpaca/tiny'
 else:
-    alpaca_secret_id = 'ops-pipeline/alpaca'
+    alpaca_secret_id = 'ops-pipeline/alpaca/large'
 
 # Load the appropriate secret
 alpaca_secret = secrets.get_secret_value(SecretId=alpaca_secret_id)
 ```
+
+**IMPORTANT:** The dispatcher loads secrets by tier name: `ops-pipeline/alpaca/{ACCOUNT_TIER}`.
+If the tier-specific secret doesn't exist, it falls back to `ops-pipeline/alpaca` but uses a
+hardcoded account_name like "large-default" which can cause issues with the claim mechanism.
+Always ensure the tier-specific secret exists.
 
 **Services using multi-account pattern:**
 - position-manager-service (ACCOUNT_NAME=large)
@@ -809,7 +815,7 @@ SELECT * FROM dispatch_executions WHERE account_name = 'large';
 **VPC:** vpc-0444cb2b7a3457502  
 **Log Group Prefix:** /ecs/ops-pipeline/  
 **Alpaca Dashboard:** https://app.alpaca.markets/paper/dashboard
-**Alpaca Secrets:** ops-pipeline/alpaca (large), ops-pipeline/alpaca/tiny
+**Alpaca Secrets:** ops-pipeline/alpaca (large), ops-pipeline/alpaca/large (large by tier), ops-pipeline/alpaca/tiny
 
 ---
 

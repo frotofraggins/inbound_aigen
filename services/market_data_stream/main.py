@@ -14,7 +14,6 @@ import json
 from datetime import datetime
 from decimal import Decimal
 from alpaca.data.live import StockDataStream
-from alpaca.data.enums import Feed
 
 import config
 import db
@@ -90,6 +89,28 @@ async def handle_bar_update(bar):
         price = float(bar.close)
         volume = int(bar.volume)
         timestamp = bar.timestamp
+        
+        # Log bar received (for debugging)
+        log_event('bar_received', {
+            'ticker': ticker,
+            'price': price,
+            'volume': volume,
+            'timestamp': timestamp.isoformat()
+        })
+        
+        # Insert bar into lane_telemetry for other services
+        try:
+            db.insert_bar(db_conn, {
+                'ticker': ticker,
+                'ts': timestamp,
+                'open': float(bar.open),
+                'high': float(bar.high),
+                'low': float(bar.low),
+                'close': price,
+                'volume': volume
+            })
+        except Exception as e:
+            logger.error(f"Failed to insert bar for {ticker}: {e}")
         
         # Check cooldown (don't spam signals)
         if ticker in last_signal_time:
@@ -288,8 +309,8 @@ async def main():
     # Create WebSocket stream
     data_stream = StockDataStream(
         api_key=cfg['alpaca_api_key'],
-        secret_key=cfg['alpaca_api_secret'],
-        feed=Feed.IEX  # Use IEX feed for real-time data
+        secret_key=cfg['alpaca_api_secret']
+        # Use default feed (paper trading default works)
     )
     
     # Subscribe to bars for all watchlist tickers
@@ -298,7 +319,7 @@ async def main():
     
     log_event('websocket_subscribed', {
         'tickers': len(tickers),
-        'feed': 'iex',
+        'feed': 'default',
         'update_frequency': '1-3_seconds'
     })
     

@@ -18,7 +18,7 @@
         },
         {
           "name": "DATA_SOURCE",
-          "value": "alpaca"
+          "value": "yfinance"
         },
         {
           "name": "LOOKBACK_MINUTES",

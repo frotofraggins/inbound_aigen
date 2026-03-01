@@ -1,0 +1,4 @@
+# file: /workplace/nflos/inbound_aigen/services/position_manager/eod_config.py
+# hypothesis_version: 6.151.6
+
+[-20.0, -10.0, 0.05, 1.0, 1.5, 2.0, 5.0, 10.0, 15.0, 20.0, 200.0, 5000.0, 100, '14:30', '15:00', '15:30', '15:55', ':', 'EODConfig', 'high_theta_threshold', 'large', 'profit_delay_minutes', 'tiny', 'vix_high_multiplier']

@@ -81,7 +81,8 @@ def release_stuck_processing(conn, ttl_minutes: int) -> int:
     Reaper: Reset stuck PROCESSING rows back to PENDING.
     Returns count of released rows.
     """
-    cutoff = datetime.utcnow() - timedelta(minutes=ttl_minutes)
+    from datetime import timezone as tz
+    cutoff = datetime.now(tz.utc) - timedelta(minutes=ttl_minutes)
     
     with conn.cursor() as cur:
         cur.execute("""
@@ -103,53 +104,43 @@ def claim_pending_recommendations(
     conn,
     run_id: str,
     limit: int,
-    lookback_minutes: int
+    lookback_minutes: int,
+    allowed_actions: list = None,
+    account_name: str = None
 ) -> List[Dict[str, Any]]:
     """
-    Atomically claim pending recommendations using FOR UPDATE SKIP LOCKED.
+    Read recent recommendations this account hasn't executed yet.
     
-    This is the CRITICAL pattern for idempotency:
-    1. SELECT FOR UPDATE SKIP LOCKED (atomic lock, no duplicates)
-    2. UPDATE to PROCESSING in same transaction
-    3. COMMIT
-    4. Only then do expensive work
-    
-    Returns list of claimed recommendation dicts.
+    FIX 2026-02-11: No longer exclusively claims (no FOR UPDATE SKIP LOCKED).
+    Both dispatchers can now independently process the same recommendation.
+    Idempotency enforced by UNIQUE(recommendation_id, account_name) on executions.
     """
-    cutoff = datetime.utcnow() - timedelta(minutes=lookback_minutes)
+    from datetime import timezone as tz
+    cutoff = datetime.now(tz.utc) - timedelta(minutes=lookback_minutes)
+    
+    params = [cutoff, account_name or 'unknown']
+    action_filter = ""
+    if allowed_actions:
+        action_filter = "AND (UPPER(action) || '_' || UPPER(instrument_type)) = ANY(%s)"
+        params.append(allowed_actions)
+    params.append(limit)
     
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        # Atomic claim: lock rows, update status, commit
-        cur.execute("""
-            WITH locked_rows AS (
-                SELECT id
-                FROM dispatch_recommendations
-                WHERE status = 'PENDING'
-                  AND ts >= %s
-                ORDER BY ts ASC
-                LIMIT %s
-                FOR UPDATE SKIP LOCKED
-            )
-            UPDATE dispatch_recommendations
-            SET status = 'PROCESSING',
-                dispatcher_run_id = %s,
-                processed_at = NOW()
-            FROM locked_rows
-            WHERE dispatch_recommendations.id = locked_rows.id
-            RETURNING 
-                dispatch_recommendations.id,
-                dispatch_recommendations.ticker,
-                dispatch_recommendations.action,
-                dispatch_recommendations.instrument_type,
-                dispatch_recommendations.strategy_type,
-                dispatch_recommendations.confidence,
-                dispatch_recommendations.reason,
-                dispatch_recommendations.ts AS created_at,
-                dispatch_recommendations.features_snapshot
-        """, (cutoff, limit, run_id))
-        
+        cur.execute(f"""
+            SELECT 
+                id, ticker, action, instrument_type, strategy_type,
+                confidence, reason, ts AS created_at, features_snapshot
+            FROM dispatch_recommendations
+            WHERE ts >= %s
+              AND id NOT IN (
+                  SELECT recommendation_id FROM dispatch_executions
+                  WHERE account_name = %s
+              )
+              {action_filter}
+            ORDER BY confidence DESC, ts DESC
+            LIMIT %s
+        """, params)
         rows = cur.fetchall()
-        conn.commit()
     
     return rows
 
@@ -273,11 +264,13 @@ def insert_execution(
                     theta,
                     implied_volatility,
                     option_symbol,
-                    strategy_type
+                    strategy_type,
+                    features_snapshot
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s::jsonb
                 )
                 RETURNING execution_id
             """, (
@@ -309,7 +302,8 @@ def insert_execution(
                 execution_data.get('theta'),
                 execution_data.get('implied_volatility'),
                 execution_data.get('option_symbol'),
-                execution_data.get('strategy_type')
+                execution_data.get('strategy_type'),
+                json.dumps(execution_data.get('features_snapshot') or {})
             ))
             
             execution_id = cur.fetchone()[0]
@@ -443,35 +437,56 @@ def get_latest_bar(conn, ticker: str, max_age_seconds: int) -> Optional[Dict[str
     """
     Get most recent 1-minute bar for ticker.
     Returns None if no bar within max_age_seconds.
+
+    CRITICAL FIX 2026-02-11: Use timezone-aware datetime + debug logging
     """
-    cutoff = datetime.utcnow() - timedelta(seconds=max_age_seconds)
+    from datetime import timezone as tz
+    import logging
+    logger = logging.getLogger(__name__)
     
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("""
-            SELECT 
-                ticker,
-                ts,
-                open,
-                high,
-                low,
-                close,
-                volume
-            FROM lane_telemetry
-            WHERE ticker = %s
-              AND ts >= %s
-            ORDER BY ts DESC
-            LIMIT 1
-        """, (ticker, cutoff))
-        
-        row = cur.fetchone()
-        return dict(row) if row else None
+    cutoff = datetime.now(tz.utc) - timedelta(seconds=max_age_seconds)
+
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT
+                    ticker,
+                    ts,
+                    open,
+                    high,
+                    low,
+                    close,
+                    volume,
+                    EXTRACT(EPOCH FROM (NOW() - ts)) as age_seconds
+                FROM lane_telemetry
+                WHERE ticker = %s
+                  AND ts >= %s
+                ORDER BY ts DESC
+                LIMIT 1
+            """, (ticker, cutoff))
+
+            row = cur.fetchone()
+            
+            if row:
+                age = float(row['age_seconds'])
+                logger.info(f"Bar found for {ticker}: age={age:.0f}s (threshold={max_age_seconds}s)")
+                return dict(row)
+            else:
+                logger.warning(f"No bar for {ticker} within {max_age_seconds}s (cutoff={cutoff})")
+                return None
+    except Exception as e:
+        logger.error(f"Error fetching bar for {ticker}: {e}")
+        return None
 
 def get_latest_features(conn, ticker: str, max_age_seconds: int) -> Optional[Dict[str, Any]]:
     """
     Get most recent computed features for ticker.
     Returns None if no features within max_age_seconds.
+    
+    CRITICAL FIX 2026-02-11: Use timezone-aware datetime for comparison
     """
-    cutoff = datetime.utcnow() - timedelta(seconds=max_age_seconds)
+    from datetime import timezone as tz
+    cutoff = datetime.now(tz.utc) - timedelta(seconds=max_age_seconds)
     
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("""
@@ -486,7 +501,8 @@ def get_latest_features(conn, ticker: str, max_age_seconds: int) -> Optional[Dic
                 baseline_vol,
                 vol_ratio,
                 trend_state,
-                computed_at
+                computed_at,
+                EXTRACT(EPOCH FROM (NOW() - computed_at)) as age_seconds
             FROM lane_features_clean
             WHERE ticker = %s
               AND computed_at >= %s

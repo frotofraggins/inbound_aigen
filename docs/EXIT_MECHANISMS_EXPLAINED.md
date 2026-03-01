@@ -1,268 +1,188 @@
-# 🚪 Exit Mechanisms - How Positions Close
-**Date:** 2026-02-04 18:53 UTC
-**Question:** What if a position never hits +80% or -40%? How do we close it?
+# Exit Mechanisms — How Positions Close
+**Last Updated:** February 11, 2026  
+**System Version:** v17 (EOD Engine)
 
 ---
 
-## 🎯 ALL Exit Mechanisms (7 Total)
+## Overview
 
-We have SEVEN different ways a position can close. Here's each one:
+The system has two layers of exit logic:
 
-### 1. Take Profit Target (+80%) ✅
-**Trigger:** Position reaches +80% profit
-
-**Example:** INTC at $1.93 → $3.47 = +80%
-
-**Purpose:** Lock in big wins
-
-### 2. Stop Loss (-40%) ✅
-**Trigger:** Position reaches -40% loss
-
-**Example:** INTC at $1.93 → $1.16 = -40%
-
-**Purpose:** Limit downside risk
-
-### 3. Max Hold Time ⭐ ANSWERS YOUR QUESTION
-**Trigger:** Position held for max_hold_minutes (default: 240 minutes = 4 hours)
-
-**Example:** INTC opened at 18:14, will force close at 22:14 if still open
-
-**Purpose:** **This is how we close positions that never hit thresholds!**
-
-**Code:**
-```python
-if hold_minutes >= position['max_hold_minutes']:
-    return {
-        'reason': 'max_hold_time',
-        'priority': 3,
-        'message': f'Max hold time exceeded: {hold_minutes:.0f} >= 240 minutes'
-    }
-```
-
-**What this means:**
-- Even if INTC is at +15% (not +80%) after 4 hours
-- Or at -10% (not -40%) after 4 hours  
-- **It will close automatically**
-- Preserves small gains
-- Prevents small losses from becoming big losses
-
-### 4. Day Trade Close (3:55 PM ET) ⏰
-**Trigger:** Still holding position at 3:55 PM ET
-
-**Purpose:** Close day trades before market closes
-
-**Code:**
-```python
-if now_et.time() >= DAY_TRADE_CLOSE_TIME:  # 3:55 PM ET
-    return {
-        'reason': 'day_trade_close',
-        'priority': 1,
-        'message': 'Closing day trade before market close'
-    }
-```
-
-### 5. Options Expiration Emergency (< 24 hours) 🚨
-**Trigger:** Option within 24 hours of expiration
-
-**Example:** INTC expires Feb 20, will force close on Feb 19
-
-**Purpose:** Prevent worthless expiration
-
-### 6. Theta Decay Risk (< 7 days, < 30% profit) ⚠️
-**Trigger:** Option within 7 days of expiry AND < 30% profit
-
-**Purpose:** Exit before time decay erodes small gains
-
-### 7. Manual Close 🔧
-**Trigger:** You manually close via Alpaca dashboard or API
-
-**Purpose:** Override everything, exit now
+1. **Standard exits** — run every minute, apply to all positions regardless of time of day
+2. **EOD Exit Engine** — activates during graduated close windows (2:30–3:55 PM ET), strategy-aware and P&L-aware
 
 ---
 
-## 🎯 Answer to Your Question
+## Standard Exit Mechanisms (Always Active)
 
-**If INTC never hits +80% or -40%, what happens?**
+### 1. Take Profit (+80%)
+Position reaches +80% unrealized gain. Locks in big wins.
 
-### Scenario 1: Profitable But Not at Target
-**Example:** INTC at +15% profit after 3 hours
+### 2. Stop Loss (-40%)
+Position reaches -40% unrealized loss. Limits downside.
 
-**What happens:**
-- Held for 30 minutes minimum ✅
-- Not at +80% yet (target not hit)
-- Not at -40% (stop not hit)
-- At 4 hours: **max_hold_time triggers**
-- **Closes automatically with +15% profit** ✅
-- **Profit preserved!**
+### 3. Trailing Stop (75% of peak)
+Once a position reaches a new high, the trailing stop locks in 75% of peak gains. If price retraces past the trailing stop level, the position closes. Active since Feb 6.
 
-### Scenario 2: Small Loss But Not Stop Loss
-**Example:** INTC at -10% loss after 3 hours
+### 4. Max Hold Time (4 hours default)
+Position held longer than `max_hold_minutes` (default 240). Closes with whatever P&L exists. Prevents capital from sitting idle.
 
-**What happens:**
-- Held for 30 minutes minimum ✅
-- Not at -40% (stop not hit)
-- Not at +80% (target not hit)
-- At 4 hours: **max_hold_time triggers**
-- **Closes automatically with -10% loss**
-- **Prevents becoming -40% loss** ✅
+### 5. Options Expiration Emergency (< 24 hours)
+Option within 24 hours of expiration. Force-closes to prevent worthless expiration.
 
-### Scenario 3: Bouncing Around Breakeven
-**Example:** INTC fluctuating between -5% and +5%
+### 6. Theta Decay Warning (< 7 days, < 30% profit)
+Option within 7 days of expiry AND less than 30% profit. Exits before time decay erodes small gains.
 
-**What happens:**
-- Monitored every 1 minute
-- Never hits thresholds
-- At 4 hours: **max_hold_time triggers**
-- **Closes with whatever P&L** (small win or small loss)
-- Frees up capital for next trade ✅
+### 7. Manual Close
+Closed via Alpaca dashboard or API. Overrides everything.
 
 ---
 
-## ⏱️ Max Hold Time Details
+## EOD Exit Engine (New — Feb 11)
 
-### Current Setting
-**Default:** 240 minutes (4 hours)
+Replaces the old blanket 3:55 PM force-close. The EOD engine is strategy-aware, meaning it treats day trades and swing trades differently.
 
-**Set in:** dispatch_recommendations (varies per trade)
+### Graduated Close Windows
 
-### For INTC Specifically
-- **Opened:** 18:14 UTC
-- **Max hold:** 240 minutes (4 hours)
-- **Will force close at:** 22:14 UTC (10:14 PM)
-- **Even if:** P&L is +15% (not at +80%)
+Four evaluation checkpoints with progressively stricter criteria:
 
-### Why 4 Hours?
-1. **Gives strategy time to work** - not too short
-2. **Prevents overnight risk** - closes before end of day
-3. **Frees capital** - doesn't tie up money indefinitely
-4. **Reduces theta decay** - options lose value over time
-5. **Takes small wins** - +15% is still a win!
+| Window | Time (ET) | Day Trades | Swing Trades |
+|--------|-----------|------------|--------------|
+| 0 | 2:30 PM | Close if loss > 20% | No action |
+| 1 | 3:00 PM | Close if loss > 10% | Close if failing >1 overnight criterion |
+| 2 | 3:30 PM | Close all losing | Close if failing any criterion |
+| 3 | 3:55 PM | Close ALL remaining | Close all that don't qualify for overnight |
+
+### Strategy Routing
+
+- **Day trades** (and unknown/missing strategy): Always closed by final window. Earlier windows close losers progressively.
+- **Swing trades**: Evaluated against overnight hold criteria. Can hold overnight if they pass all checks.
+
+### Overnight Hold Criteria (Swing Trades)
+
+A swing trade can hold overnight only if ALL of these pass:
+
+| Criterion | Large Account | Tiny Account |
+|-----------|--------------|--------------|
+| DTE (days to expiration) | ≥ 3 | ≥ 3 |
+| Unrealized P&L | ≥ 10% | ≥ 15% |
+| Position size (% of equity) | ≤ 5% | ≤ 5% |
+
+These thresholds are adjusted by VIX regime and theta scoring (see below).
+
+### Theta Scoring
+
+Theta score = `abs(theta) / current_premium`. Measures how fast the option is decaying.
+
+- If theta is unavailable: treated as maximum risk (score = 1.0)
+- If theta score > 0.05 (high): P&L threshold for overnight hold is reduced by 10 percentage points
+- If DTE ≤ 2 AND high theta: force-close regardless of P&L
+
+### VIX Regime Adjustment
+
+The system queries the latest VIX regime and adjusts overnight criteria:
+
+| VIX Regime | P&L Threshold | Exposure Limit | Action |
+|------------|---------------|----------------|--------|
+| Complacent/Normal | No change | No change | — |
+| Elevated | × 1.5 | No change | Tighter P&L bar |
+| High | × 2.0 | ÷ 2 | Much tighter + reduced exposure |
+| Extreme | — | — | Force-close ALL positions |
+
+If VIX data is stale (>24h) or unavailable, the system defaults to "elevated" (conservative).
+
+### Earnings Calendar
+
+Positions with earnings within 1 trading day are force-closed, regardless of P&L or other criteria. The earnings client queries Alpaca corporate actions API and caches results per trading day.
+
+### Overnight Exposure Limit
+
+After individual position evaluation, the engine sums the notional value of all positions qualifying for overnight hold:
+
+- Large account limit: $5,000
+- Tiny account limit: $200
+
+If over the limit, the least profitable positions are closed first until within the limit.
+
+### Close-Loop Monitor
+
+Detects positions stuck in "closing" state beyond 5 minutes:
+
+1. Retries the close order once
+2. If retry fails, logs `close_failed` event for manual review
+3. If market is closed, queues the close for next market open
+4. Also detects and cleans up duplicate positions (same ticker/account/instrument type)
+
+### Close Urgency Score
+
+When multiple positions need closing at the same window, they're prioritized by a composite urgency score:
+
+- Worse P&L → higher urgency
+- Lower DTE → higher urgency
+- Higher theta score → higher urgency
+- Less time to market close → higher urgency
 
 ---
 
-## 🎯 Exit Priority Order
+## Entry Cutoff Gates (New — Feb 11)
 
-When multiple exit conditions trigger, priority determines which wins:
+These gates prevent new entries too close to market close:
 
-1. **Priority 1:** Day trade close (3:55 PM)
+| Gate | Large Account | Tiny Account |
+|------|--------------|--------------|
+| Day trade cutoff | 2:00 PM ET | 1:00 PM ET |
+| Swing trade cutoff | 3:00 PM ET | 2:00 PM ET |
+| After-hours block | Outside 9:30 AM – 4:00 PM ET | Same |
+| Duplicate position | Blocked if ticker already open/closing | Same |
+
+---
+
+## Exit Priority Order
+
+When multiple exit conditions trigger simultaneously:
+
+1. **Priority 1:** EOD Engine decisions (earnings, VIX extreme, graduated window)
 2. **Priority 2:** Expiration emergency (< 24 hours)
-3. **Priority 3:** Max hold time
-4. **Priority 3:** Stop loss (-40%)
-5. **Priority 3:** Take profit (+80%)
-6. **Priority 4:** Theta decay warning
-
-**Lower number = higher priority**
+3. **Priority 3:** Max hold time / Stop loss / Take profit / Trailing stop
+4. **Priority 4:** Theta decay warning
 
 ---
 
-## 📊 INTC Timeline Example
+## Decision Logging
 
-### Current Status (18:53 UTC, Age 39 min)
-- **Entry:** $1.93
-- **Current:** $1.84 (P&L: -4.66%)
-- **Stop:** $1.16 (-40%)
-- **Target:** $3.47 (+80%)
-- **Max hold:** 4 hours (until 22:14 UTC)
+Every EOD decision is logged to `position_events` with full context:
 
-### Possible Outcomes
+- `eod_decision` — strategy type, P&L, DTE, theta score, VIX regime, window index, per-criterion pass/fail
+- `overnight_hold` — ticker, option symbol, expiration, entry/current price, criteria snapshot
+- `overnight_outcome` — next-day open price vs previous close, overnight P&L
+- `close_retry` / `close_failed` — stuck position recovery events
+- `duplicate_cleanup` — duplicate position cleanup
 
-#### Outcome A: Hits Take Profit
-- INTC rises to $3.47
-- **Closes at +80%** ✅
-- **Big win!**
-
-#### Outcome B: Hits Stop Loss
-- INTC drops to $1.16
-- **Closes at -40%**
-- **Loss limited** ✅
-
-#### Outcome C: Max Hold Time (YOUR QUESTION!)
-- INTC sits at $2.05 (+6%) for 4 hours
-- Never hits $3.47 or $1.16
-- At 22:14 UTC: **Closes at +6%**
-- **Small win preserved!** ✅
-
-#### Outcome D: Market Close
-- Still holding at 3:55 PM ET
-- **Day trade close triggers**
-- **Closes at current P&L**
-
-#### Outcome E: Expiration Emergency
-- Held for 15 days
-- Feb 19: **< 24 hours to expiry**
-- **Force closes to prevent worthless expiration** ✅
+All events feed into the AI learning pipeline for future parameter tuning.
 
 ---
 
-## 💡 Why This Design Is Smart
+## Configuration
 
-### Takes Small Wins
-- Don't need perfect +80% to profit
-- +10%, +20%, +30% all count as wins
-- Max hold time captures these
+All EOD parameters are SSM-configurable (JSON in Parameter Store) per account tier. Key parameters:
 
-### Limits Small Losses
-- Don't need full -40% to exit
-- -5%, -10%, -15% losses get cut at 4 hours
-- Prevents "death by a thousand cuts"
+```json
+{
+  "graduated_close_windows": ["14:30", "15:00", "15:30", "15:55"],
+  "window_1_max_loss_pct": -20.0,
+  "window_2_max_loss_pct": -10.0,
+  "min_dte_for_overnight": 3,
+  "min_pnl_pct_for_overnight": 10.0,
+  "max_position_pct_for_overnight": 5.0,
+  "max_overnight_option_exposure": 5000.0,
+  "high_theta_threshold": 0.05,
+  "theta_pnl_penalty_pct": 10.0,
+  "vix_elevated_multiplier": 1.5,
+  "vix_high_multiplier": 2.0,
+  "max_closing_duration_minutes": 5,
+  "last_entry_hour_et_day_trade": 14,
+  "last_entry_hour_et_swing_trade": 15
+}
+```
 
-### Prevents Holding Forever
-- Capital doesn't sit idle
-- Gets reinvested in next opportunity
-- Keeps system active
-
-### Real-World Flexibility
-Markets don't always cooperate:
-- Target might be too optimistic (+80% is ambitious)
-- Stop might be too far (-40% is wide)
-- Max hold time provides practical exit
-
----
-
-## 🔧 Adjusting Max Hold Time
-
-### Current: 4 Hours (240 minutes)
-
-### Could Be Adjusted To:
-- **2 hours (120 min):** More aggressive, faster turnover
-- **8 hours (480 min):** Hold overnight positions
-- **60 min:** Quick scalping strategy
-
-### Set Per Position
-Each recommendation can have different max_hold_minutes based on:
-- Volatility of underlying
-- Time until expiration
-- Market conditions
-- Strategy type
-
----
-
-## ✅ Summary
-
-**Your Question:** "If never hits +80% or -40%, how do we close to preserve gains?"
-
-**Answer:** **max_hold_time (4 hours default)**
-
-**How it works:**
-1. Position held for 4 hours
-2. Currently at +15% (not at +80%)
-3. max_hold_time triggers
-4. Closes with +15% profit
-5. **Gain preserved!**
-
-**This happens automatically every 4 hours unless:**
-- Stop loss hits first (-40%)
-- Take profit hits first (+80%)
-- Day trade close triggers (3:55 PM)
-- Expiration emergency (< 24 hours)
-
-**INTC example:**
-- Opened 18:14 UTC
-- If still open at 22:14 UTC (4 hours)
-- Will close at whatever P&L it has
-- Could be +10%, +20%, -5%, -15%
-- Preserves gains, cuts losses early
-
----
-
-**This is one of your most important protections for capital preservation!**
+Tiny account overrides: `max_overnight_option_exposure: 200`, `min_pnl_pct_for_overnight: 15`, `last_entry_hour_et_day_trade: 13`, `last_entry_hour_et_swing_trade: 14`.

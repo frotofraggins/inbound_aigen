@@ -63,8 +63,12 @@ ALPACA_BASE_URL = _config['alpaca_base_url']
 # Set via environment variable ACCOUNT_NAME (defaults to 'large')
 ACCOUNT_NAME = os.getenv('ACCOUNT_NAME', 'large')
 
-# Exit rules
-DAY_TRADE_CLOSE_TIME = time(15, 55)  # 3:55 PM ET
+# Account tier derived from ACCOUNT_NAME (R7.5)
+ACCOUNT_TIER = 'tiny' if ACCOUNT_NAME == 'tiny' else 'large'
+
+# Exit rules — graduated windows replace the single close time
+# DAY_TRADE_CLOSE_TIME kept as fallback for non-EOD-engine code paths
+DAY_TRADE_CLOSE_TIME = time(15, 55)  # 3:55 PM ET (final graduated window default)
 OPTIONS_EXPIRY_WARNING_HOURS = 24
 MAX_HOLD_MINUTES_DEFAULT = 240  # 4 hours
 

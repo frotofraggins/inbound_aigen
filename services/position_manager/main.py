@@ -50,19 +50,35 @@ def main():
     monitor.bar_fetcher = OptionBarFetcher(ALPACA_API_KEY, ALPACA_API_SECRET)
     logger.info("✓ Option bar fetcher initialized for AI learning")
     
+    # Initialize EOD exit engine for this monitoring cycle
     try:
-        # Step 1: FIRST sync positions directly from Alpaca API (Phase 3 Fix)
-        # This catches ALL positions including manual trades and logging gaps
-        logger.info("Step 1: Syncing from Alpaca API...")
-        alpaca_synced = monitor.sync_from_alpaca_positions()
-        if alpaca_synced > 0:
-            logger.info(f"✓ Synced {alpaca_synced} position(s) from Alpaca")
-        
-        # Step 2: THEN sync new positions from recent executions in our database
-        # Look back 10 minutes to catch any executions since last run
-        # CRITICAL: Pass account_name to filter by this instance's account
+        monitor._eod_engine = monitor._init_eod_engine()
+        if monitor._eod_engine:
+            logger.info(f"✓ EOD exit engine initialized (tier={monitor._eod_engine.account_tier}, "
+                        f"vix={monitor._eod_engine.vix_regime.effective_regime})")
+        else:
+            logger.warning("⚠ EOD engine not initialized, falling back to legacy close")
+    except Exception as e:
+        logger.warning(f"⚠ EOD engine init failed: {e}, falling back to legacy close")
+        monitor._eod_engine = None
+
+    # Initialize close-loop monitor
+    try:
+        from eod_config import EODConfig
+        from close_loop import CloseLoopMonitor
+        account_tier = 'tiny' if ACCOUNT_NAME == 'tiny' else 'large'
+        eod_config = EODConfig.for_account_tier(account_tier)
+        monitor._close_loop_monitor = CloseLoopMonitor(eod_config)
+        logger.info("✓ Close-loop monitor initialized")
+    except Exception as e:
+        logger.warning(f"⚠ Close-loop monitor init failed: {e}")
+        monitor._close_loop_monitor = None
+    
+    try:
+        # Step 1: FIRST sync from database executions (has features from recommendation JOIN)
+        # CRITICAL: This must run before Alpaca sync so positions get entry_features_json
         sync_since = start_time - timedelta(minutes=10)
-        logger.info(f"\nStep 2: Syncing positions from executions since {sync_since.strftime('%H:%M:%S')}")
+        logger.info(f"Step 1: Syncing positions from executions since {sync_since.strftime('%H:%M:%S')}")
         
         new_count = monitor.sync_new_positions(sync_since, ACCOUNT_NAME)
         if new_count > 0:
@@ -70,7 +86,19 @@ def main():
         else:
             logger.info("No new positions to create from database")
         
-        # Step 2: Get all open positions for THIS account only
+        # Step 2: THEN sync from Alpaca API to catch manual trades and logging gaps
+        # These won't have features (no recommendation), which is correct
+        logger.info("\nStep 2: Syncing from Alpaca API...")
+        alpaca_synced = monitor.sync_from_alpaca_positions()
+        if alpaca_synced > 0:
+            logger.info(f"✓ Synced {alpaca_synced} position(s) from Alpaca")
+        
+        # Step 2b: Clean up positions stuck in 'closing' for >30 minutes
+        cleaned = db.cleanup_stuck_closing(ACCOUNT_NAME, max_age_minutes=30)
+        if cleaned > 0:
+            logger.warning(f"⚠ Cleaned up {cleaned} stuck 'closing' position(s)")
+        
+        # Step 3: Get all open positions for THIS account only
         logger.info(f"\nFetching open positions for account: {ACCOUNT_NAME}")
         open_positions = db.get_open_positions(account_name=ACCOUNT_NAME)
         
@@ -96,7 +124,35 @@ def main():
             )
         logger.info("-" * 80)
         
-        # Step 3: Monitor each position
+        # Step 4: Check close-loop integrity before exit evaluation
+        if monitor._close_loop_monitor:
+
+            # Log overnight outcomes for positions held overnight (R6.4)
+            try:
+                outcome_count = monitor.log_overnight_outcomes(open_positions)
+                if outcome_count > 0:
+                    logger.info(f"✓ Logged {outcome_count} overnight outcome(s)")
+            except Exception as e:
+                logger.error(f"Overnight outcome logging failed: {e}")
+
+            try:
+                stuck_actions = monitor._close_loop_monitor.check_stuck_positions(open_positions)
+                for action in stuck_actions:
+                    logger.warning(f"  Close-loop: position {action.position_id} → {action.action}: {action.reason}")
+                    db.log_position_event(action.position_id, f'close_{action.action}', {
+                        'action': action.action, 'reason': action.reason,
+                    })
+
+                dup_actions = monitor._close_loop_monitor.detect_duplicates(open_positions)
+                for action in dup_actions:
+                    logger.warning(f"  Duplicate: position {action.position_id} → {action.action}: {action.reason}")
+                    db.log_position_event(action.position_id, 'duplicate_cleanup', {
+                        'action': action.action, 'reason': action.reason,
+                    })
+            except Exception as e:
+                logger.error(f"Close-loop check failed: {e}")
+
+        # Step 5: Monitor each position
         positions_closed = 0
         positions_updated = 0
         positions_errored = 0
@@ -180,7 +236,7 @@ def main():
                 logger.error(f"  ✗ Error processing position {position_id}: {e}")
                 positions_errored += 1
         
-        # Step 4: Log final summary
+        # Step 6: Log final summary
         end_time = datetime.now(timezone.utc)
         duration = (end_time - start_time).total_seconds()
         
@@ -204,7 +260,7 @@ def main():
         
     except Exception as e:
         logger.error(f"FATAL ERROR in position manager: {e}", exc_info=True)
-        sys.exit(1)
+        raise  # Re-raise so the outer loop can catch and retry
 
 
 if __name__ == "__main__":

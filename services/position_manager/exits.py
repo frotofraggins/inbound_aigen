@@ -31,7 +31,12 @@ EXIT_REASON_MAP = {
     'expiration_risk': 'expiry_risk',
     'theta_decay_risk': 'theta_decay',
     'missing_brackets': 'forced_close_missing_bracket',
-    'manual_close': 'manual'
+    'manual_close': 'manual',
+    'market_close_protection': 'EOD_EXIT',
+    'earnings_close': 'EOD_EXIT',
+    'vix_extreme': 'EOD_EXIT',
+    'theta_force_close': 'EOD_EXIT',
+    'overnight_exposure_limit': 'EOD_EXIT',
 }
 
 

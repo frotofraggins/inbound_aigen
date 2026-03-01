@@ -1,0 +1,4 @@
+# file: /workplace/nflos/inbound_aigen/services/position_manager/eod_engine.py
+# hypothesis_version: 6.151.6
+
+[0.0, 0.5, 1.0, 20.0, 25.0, 30.0, 50.0, 60.0, 100.0, 100000.0, 'America/New_York', 'already_closing', 'close', 'closing', 'complacent', 'current_pnl_dollars', 'current_pnl_percent', 'current_price', 'dte', 'earnings_close', 'elevated', 'entry_price', 'extreme', 'high', 'hold', 'id', 'large', 'min_pnl_pct', 'normal', 'notional', 'skip', 'status', 'strategy_type', 'swing_trade', 'theta', 'theta_force_close', 'theta_penalty', 'ticker', 'unknown', 'vix_elevated', 'vix_extreme', 'vix_high']

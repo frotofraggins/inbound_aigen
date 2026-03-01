@@ -518,6 +518,11 @@ aws ecs register-task-definition --cli-input-json file://deploy/breadth-monitor-
 ❌ **Rebuilding without --no-cache** → Old code cached  
 ❌ **Forgetting ACCOUNT_NAME** → Service uses wrong account  
 ❌ **Not waiting for deployment** → Service still using old image  
+❌ **Using sys.exit() in service loops** → Use `return` or `raise` instead. `SystemExit` inherits from `BaseException`, not `Exception`, so `except Exception` won't catch it. This caused crash-loops in telemetry and position manager (fixed Feb 11).  
+❌ **Using positions API for option prices** → Use `/v1beta1/options/quotes/latest` for live bid/ask. The positions API returns stale broker valuations (fixed Feb 11).  
+❌ **Task definition pointing to old image tag** → Always verify the image tag in the task definition matches what you pushed. Use `:latest` for all services.
+❌ **Position sync order matters** → DB sync (with features) must run BEFORE Alpaca sync. Alpaca sync creates positions with empty features. If it runs first, DB sync skips them (already exist). Fixed Feb 11.
+❌ **Dispatcher not saving features_snapshot** → The INSERT into dispatch_executions must include features_snapshot. Without it, the learning pipeline has no feature data. Fixed Feb 11.
 
 **Avoid these and you're 90% there.**
 
@@ -532,7 +537,7 @@ aws ecs register-task-definition --cli-input-json file://deploy/breadth-monitor-
 **Lambda (queries):** ops-pipeline-db-query  
 
 **Alpaca Secrets:**
-- Large: ops-pipeline/alpaca
+- Large: ops-pipeline/alpaca/large (or fallback: ops-pipeline/alpaca)
 - Tiny: ops-pipeline/alpaca/tiny
 
 **Market Hours:**  
@@ -556,7 +561,17 @@ aws ecs register-task-definition --cli-input-json file://deploy/breadth-monitor-
 
 ## 🚀 ADVANCED TOPICS (After First Week)
 
-- Adding ML-based confidence adjustment
+### Learning Pipeline (Active as of Feb 11)
+- **Trade Analyzer** (`services/trade_analyzer/`) — statistical analysis of trade outcomes
+- **Learning Applier** (`services/learning_applier/`) — Bedrock Claude reviews findings, auto-applies SSM changes
+- Daily schedule: Analyzer at 9:15 PM UTC → Applier at 9:30 PM UTC (Mon-Fri)
+- Results go to `learning_recommendations` table
+- SSM params auto-applied by AI, code changes flagged as 'ai_approved' for human deploy
+- Pre-filters: rejects if sample_size < 10 or confidence < 0.5
+- Data pipeline: `dispatch_recommendations` (features) → `dispatch_executions` (features_snapshot) → `active_positions` (entry_features_json) → `position_history` (entry_features_json)
+
+### Future ML Topics
+- Adding ML-based confidence adjustment (need 100+ trades)
 - Implementing IV rank filtering
 - Building market regime detection
 - Adding institutional flow tracking

@@ -1,0 +1,4 @@
+# file: /workplace/nflos/inbound_aigen/services/position_manager/eod_models.py
+# hypothesis_version: 6.151.6
+
+[0.0, 5.0, 10.0, 100.0, 5000.0, 100, 86400, 'account_tier', 'adjusted_by', 'close_reason', 'close_urgency_score', 'criteria', 'current_pnl_percent', 'decision', 'dte', 'earnings', 'earnings_date', 'elevated', 'large', 'max_position_pct', 'min_dte', 'min_pnl_pct', 'name', 'notional', 'observed', 'passed', 'pnl_dollars', 'pnl_pct', 'position_id', 'strategy_type', 'theta_score', 'threshold', 'ticker', 'timing', 'vix_regime', 'window_index']

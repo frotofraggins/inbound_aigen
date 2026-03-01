@@ -106,10 +106,10 @@ From Alpaca docs:
 ### What This Means
 - ❌ Can't fetch historical bars for options
 - ❌ Can't collect bar patterns for learning
-- ✅ Can still get current option price (from positions API)
+- ✅ Can get live option quotes via `/v1beta1/options/quotes/latest` (bid/ask mid-price)
 - ✅ Can still monitor positions
 - ✅ Can still execute trades
-- ✅ Exit logic still works perfectly
+- ✅ Exit logic works correctly with live quotes
 
 ### Is This a Blocker?
 **NO** - Our core functionality works without options bars:
@@ -163,12 +163,28 @@ From Alpaca docs:
 ### Our Current Usage
 ```python
 # What works ✅
-alpaca.get_all_positions()  # Current option positions
-alpaca.get_latest_quote("INTC260220C00049500")  # Current quote
+alpaca.get_all_positions()  # Current positions (for sync, NOT for pricing)
+
+# Option price tracking (CORRECT method - added Feb 11, 2026)
+import requests
+url = "https://data.alpaca.markets/v1beta1/options/quotes/latest"
+headers = {'APCA-API-KEY-ID': key, 'APCA-API-SECRET-KEY': secret}
+resp = requests.get(url, headers=headers, params={'symbols': 'ADBE260227P00270000'})
+quote = resp.json()['quotes']['ADBE260227P00270000']
+mid_price = (quote['bp'] + quote['ap']) / 2  # bid/ask mid-price
 
 # What fails ❌
-alpaca.get_option_bars("INTC260220C00049500")  # 403 Forbidden
+alpaca.get_option_bars("INTC260220C00049500")  # 403 Forbidden (bars only)
 ```
+
+### ⚠️ CRITICAL: Do NOT Use Positions API for Option Pricing
+
+**Bug found Feb 11, 2026:** The positions API (`get_open_position()`) returns the broker's
+valuation which can be stale or wrong. This caused all option prices in the database to be
+incorrect — ADBE showed $11.75 when reality was $16.61, NVDA showed +1% when actually -11%.
+
+**Correct method:** Use `/v1beta1/options/quotes/latest` for live bid/ask quotes.
+This endpoint works on the Basic (free) plan.
 
 ---
 
@@ -207,19 +223,24 @@ This is acceptable for now. Can upgrade later if needed.
 
 ### Current Position Tracking (What We Do)
 ```python
-# From monitor.py
-def update_position_price(position):
-    # Get current price from Alpaca positions
-    alpaca_positions = alpaca_client.get_all_positions()
-    
-    for ap in alpaca_positions:
-        if ap.symbol == position['option_symbol']:
-            current_price = float(ap.current_price)
-            # Update our database
-            return True
+# From monitor.py (UPDATED Feb 11, 2026)
+# Uses Alpaca Market Data API for live option quotes
+def _get_option_quote(option_symbol: str) -> Optional[float]:
+    url = "https://data.alpaca.markets/v1beta1/options/quotes/latest"
+    headers = {'APCA-API-KEY-ID': key, 'APCA-API-SECRET-KEY': secret}
+    resp = requests.get(url, headers=headers, params={'symbols': option_symbol})
+    quote = resp.json()['quotes'][option_symbol]
+    return (quote['bp'] + quote['ap']) / 2  # bid/ask mid-price
 ```
 
-**Status:** ✅ Works perfectly without bars
+**Status:** ✅ Returns live market prices (fixed Feb 11)
+
+**Previous (BROKEN):**
+```python
+# DO NOT USE - returns stale broker valuation
+alpaca_position = alpaca_client.get_open_position(option_symbol)
+current_price = float(alpaca_position.current_price)  # STALE!
+```
 
 ### Option Bars Learning (What Fails)
 ```python

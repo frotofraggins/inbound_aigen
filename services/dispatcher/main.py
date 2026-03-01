@@ -81,8 +81,10 @@ def process_recommendation(
         has_open_position = check_open_position(conn, ticker)
         
         # Get account-level state for kill switch gates
-        account_name = config.get('account_name', 'large')
-        account_state = get_account_state(conn, account_name)
+        # CRITICAL: Use account_tier ('large'/'tiny') not account_name ('large-100k'/'tiny-1k')
+        # because active_positions.account_name stores the tier, not the Alpaca account name
+        db_account_name = config.get('account_tier', 'large')
+        account_state = get_account_state(conn, db_account_name)
         
         # Evaluate all risk gates (including account-level kill switches)
         gates_passed, gate_results = evaluate_all_gates(
@@ -162,6 +164,10 @@ def process_recommendation(
             features=features
         )
         
+        # Ensure features_snapshot is in execution_data for learning pipeline
+        if 'features_snapshot' not in execution_data:
+            execution_data['features_snapshot'] = recommendation.get('features_snapshot')
+
         # Write execution record (idempotent - UNIQUE on recommendation_id)
         execution_id = insert_execution(conn, execution_data)
         
@@ -278,11 +284,15 @@ def main():
             })
         
         # PATTERN 2: Atomic claim with FOR UPDATE SKIP LOCKED
+        # FIX 2026-02-11: Pass allowed_actions so each dispatcher only claims
+        # recommendations it can process (prevents large stealing tiny's SELL_STOCK)
         recommendations = claim_pending_recommendations(
             conn,
             run_id,
             config['max_signals_per_run'],
-            config['lookback_window_minutes']
+            config['lookback_window_minutes'],
+            allowed_actions=config.get('allowed_actions'),
+            account_name=config.get('account_name', 'unknown')
         )
         
         log_event('recommendations_claimed', {

@@ -29,7 +29,10 @@ def load_config() -> Dict[str, Any]:
     # Get configuration from environment variables (with defaults)
     lookback_minutes = int(os.environ.get('LOOKBACK_MINUTES', '120'))
     interval = os.environ.get('INTERVAL', '1m')
-    data_source = os.environ.get('DATA_SOURCE', 'alpaca')
+    # CRITICAL FIX 2026-02-16: Paper trading subscription cannot access recent SIP data
+    # HTTP 403: "subscription does not permit querying recent SIP data"
+    # Switched to yfinance which is free and works
+    data_source = os.environ.get('DATA_SOURCE', 'yfinance')  # Changed from 'alpaca'
     
     # Get Alpaca API keys from Secrets Manager (like dispatcher)
     alpaca_key_id = None

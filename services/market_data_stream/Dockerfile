@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.10-slim
 
 WORKDIR /app
 
@@ -14,7 +14,7 @@ COPY db.py ./db.py
 COPY rules.py ./rules.py
 COPY gap_fade.py ./gap_fade.py
 
-# Copy WebSocket service
+# Copy WebSocket service with bar storage
 COPY main.py .
 
 # Run the service

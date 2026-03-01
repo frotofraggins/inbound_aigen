@@ -2,7 +2,7 @@
 Risk gate evaluation functions.
 Production-grade with robust error handling and comprehensive safety checks.
 """
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple, Optional, List
 from datetime import datetime, timedelta
 
 GateResult = Tuple[bool, str, Any, Any]  # (passed, reason, observed, threshold)
@@ -104,10 +104,7 @@ def check_recommendation_freshness(
     recommendation: Dict[str, Any],
     config: Dict[str, Any]
 ) -> GateResult:
-    """
-    Check if recommendation is fresh enough.
-    Prevents executing stale signals if dispatcher falls behind.
-    """
+    """Check if recommendation is fresh enough. FIXED 2026-02-11: Use timezone-aware datetime"""
     threshold_sec = config.get('max_recommendation_age_seconds', 300)  # 5 min default
     
     # Try to get timestamp (multiple field names possible)
@@ -121,7 +118,10 @@ def check_recommendation_freshness(
     if not rec_time:
         return (False, f"Could not parse recommendation time: {created_at}", None, threshold_sec)
     
-    rec_age = (datetime.utcnow() - rec_time.replace(tzinfo=None)).total_seconds()
+    # CRITICAL: Use timezone-aware datetime
+    from datetime import timezone as tz
+    now_utc = datetime.now(tz.utc)
+    rec_age = (now_utc - rec_time).total_seconds()
     passed = rec_age <= threshold_sec
     
     reason = f"Recommendation age {rec_age:.0f}s {'≤' if passed else '>'} threshold {threshold_sec}s"
@@ -132,7 +132,7 @@ def check_bar_freshness(
     bar: Optional[Dict[str, Any]], 
     config: Dict[str, Any]
 ) -> GateResult:
-    """Check if bar data is fresh enough."""
+    """Check if bar data is fresh enough. FIXED 2026-02-11: Use timezone-aware datetime"""
     threshold_sec = config.get('max_bar_age_seconds', 120)
     
     if not bar:
@@ -143,7 +143,10 @@ def check_bar_freshness(
     if not bar_ts:
         return (False, "Could not parse bar timestamp", None, threshold_sec)
     
-    bar_age = (datetime.utcnow() - bar_ts.replace(tzinfo=None)).total_seconds()
+    # CRITICAL: Use timezone-aware datetime comparison (not utcnow())
+    from datetime import timezone as tz
+    now_utc = datetime.now(tz.utc)
+    bar_age = (now_utc - bar_ts).total_seconds()
     passed = bar_age <= threshold_sec
     
     reason = f"Bar age {bar_age:.0f}s {'≤' if passed else '>'} threshold {threshold_sec}s"
@@ -154,7 +157,7 @@ def check_feature_freshness(
     features: Optional[Dict[str, Any]], 
     config: Dict[str, Any]
 ) -> GateResult:
-    """Check if feature data is fresh enough."""
+    """Check if feature data is fresh enough. FIXED 2026-02-11: Use timezone-aware datetime"""
     threshold_sec = config.get('max_feature_age_seconds', 300)
     
     if not features:
@@ -165,7 +168,10 @@ def check_feature_freshness(
     if not computed_at:
         return (False, "Could not parse feature timestamp", None, threshold_sec)
     
-    feature_age = (datetime.utcnow() - computed_at.replace(tzinfo=None)).total_seconds()
+    # CRITICAL: Use timezone-aware datetime
+    from datetime import timezone as tz
+    now_utc = datetime.now(tz.utc)
+    feature_age = (now_utc - computed_at).total_seconds()
     passed = feature_age <= threshold_sec
     
     reason = f"Feature age {feature_age:.0f}s {'≤' if passed else '>'} threshold {threshold_sec}s"
@@ -338,41 +344,127 @@ def check_trading_hours(
     """
     Time-of-day restrictions to prevent trading at open/close.
     - Block: First 5 minutes after open (9:30-9:35 AM ET)
-    - Block: Last 15 minutes before close (3:45-4:00 PM ET)
-    
+    - Block: After last_entry_hour_et (default 15 = 3:00 PM ET) — data shows 3-4 PM entries avg -39%
+    - Block: Outside market hours
+
     TIER 1 KILL SWITCH - Checked after VIX regime.
     """
-    # Get current time in ET
     from datetime import datetime
     import pytz
-    
+
     try:
         et = pytz.timezone('US/Eastern')
         now_et = datetime.now(et)
-        
+
         # Market hours: 9:30 AM - 4:00 PM ET
         market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
         opening_window_end = now_et.replace(hour=9, minute=35, second=0, microsecond=0)
-        closing_window_start = now_et.replace(hour=15, minute=45, second=0, microsecond=0)
         market_close = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
-        
+
+        # Configurable last entry hour (default 15 = 3:00 PM ET)
+        # Data analysis: 3-4 PM entries had -39.4% avg P&L, 0% win rate
+        last_entry_hour = config.get('last_entry_hour_et', 15)
+        closing_window_start = now_et.replace(hour=last_entry_hour, minute=0, second=0, microsecond=0)
+
         # Check if in opening window
         if market_open <= now_et < opening_window_end:
             return (False, f"BLOCKED: In opening window ({now_et.strftime('%H:%M')} ET)", now_et.strftime('%H:%M'), "9:30-9:35")
-        
-        # Check if in closing window
+
+        # Check if past last entry time
         if closing_window_start <= now_et < market_close:
-            return (False, f"BLOCKED: In closing window ({now_et.strftime('%H:%M')} ET)", now_et.strftime('%H:%M'), "3:45-4:00")
-        
+            return (False, f"BLOCKED: Past last entry time {last_entry_hour}:00 ET ({now_et.strftime('%H:%M')} ET)", now_et.strftime('%H:%M'), f"after {last_entry_hour}:00")
+
         # Check if outside market hours
         if now_et < market_open or now_et >= market_close:
             return (False, f"BLOCKED: Outside market hours ({now_et.strftime('%H:%M')} ET)", now_et.strftime('%H:%M'), "9:30-16:00")
-        
+
         return (True, f"Trading hours OK ({now_et.strftime('%H:%M')} ET)", now_et.strftime('%H:%M'), "9:30-16:00")
-    
+
     except:
         # If timezone fails, be conservative and allow (log warning)
         return (True, "Trading hours check failed (allowing)", None, None)
+
+def check_trading_hours_v2(
+    recommendation: Dict[str, Any],
+    config: Dict[str, Any]
+) -> GateResult:
+    """
+    R4 + R8: Strategy-aware entry cutoffs with after-hours blocking.
+
+    - R8.1: Block outside market hours (9:30 AM - 4:00 PM ET)
+    - R8.3: Timezone-aware comparisons in US/Eastern
+    - R4.1: Day trade cutoff (default 14 = 2 PM ET)
+    - R4.2: Swing trade cutoff (default 15 = 3 PM ET)
+    - R4.3: Swing trades allowed between day trade and swing trade cutoffs
+    - R4.5: Unknown strategy → day trade cutoff (more restrictive)
+    """
+    from datetime import datetime
+    import pytz
+
+    try:
+        et = pytz.timezone('US/Eastern')
+        now_et = datetime.now(et)
+
+        market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+        opening_window_end = now_et.replace(hour=9, minute=35, second=0, microsecond=0)
+        market_close = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+
+        # R8.1: Outside market hours → block all
+        if now_et < market_open or now_et >= market_close:
+            return (False, f"BLOCKED: outside_market_hours ({now_et.strftime('%H:%M')} ET)",
+                    now_et.strftime('%H:%M'), "9:30-16:00")
+
+        # Opening window block
+        if market_open <= now_et < opening_window_end:
+            return (False, f"BLOCKED: In opening window ({now_et.strftime('%H:%M')} ET)",
+                    now_et.strftime('%H:%M'), "9:30-9:35")
+
+        # R4: Strategy-specific cutoffs
+        strategy = (recommendation.get('strategy_type') or '').lower()
+
+        if strategy == 'swing_trade':
+            cutoff = config.get('last_entry_hour_et_swing_trade', 15)
+        else:
+            # day_trade, unknown, missing → use day trade cutoff (R4.5)
+            cutoff = config.get('last_entry_hour_et_day_trade', 14)
+
+        cutoff_time = now_et.replace(hour=cutoff, minute=0, second=0, microsecond=0)
+
+        if now_et >= cutoff_time:
+            return (False,
+                    f"BLOCKED: Past {strategy or 'day_trade'} entry cutoff {cutoff}:00 ET "
+                    f"({now_et.strftime('%H:%M')} ET)",
+                    now_et.strftime('%H:%M'), f"before {cutoff}:00")
+
+        return (True, f"Trading hours OK ({now_et.strftime('%H:%M')} ET, "
+                       f"strategy={strategy or 'day_trade'}, cutoff={cutoff}:00)",
+                now_et.strftime('%H:%M'), f"before {cutoff}:00")
+
+    except Exception:
+        return (True, "Trading hours check failed (allowing)", None, None)
+
+
+def check_duplicate_position(
+    ticker: str,
+    instrument_type: str,
+    account_name: str,
+    open_positions: List[Dict[str, Any]]
+) -> GateResult:
+    """
+    R8.4-8.5: Block signals for tickers that already have an open or closing position
+    in the same account with the same instrument type.
+    """
+    for pos in open_positions:
+        if (pos.get('ticker') == ticker and
+            pos.get('instrument_type') == instrument_type and
+            pos.get('account_name') == account_name and
+            pos.get('status') in ('open', 'closing')):
+            return (False,
+                    f"duplicate_position_blocked: {ticker} {instrument_type} "
+                    f"already {pos['status']}",
+                    ticker, None)
+    return (True, f"No duplicate position for {ticker} {instrument_type}", ticker, None)
+
 
 def evaluate_all_gates(
     recommendation: Dict[str, Any],
@@ -385,7 +477,10 @@ def evaluate_all_gates(
     # Account-level state (optional for backward compatibility)
     daily_pnl: float = 0.0,
     active_position_count: int = 0,
-    total_notional: float = 0.0
+    total_notional: float = 0.0,
+    # EOD strategy: open positions for duplicate check
+    open_positions: Optional[List[Dict[str, Any]]] = None,
+    account_name: str = 'large',
 ) -> Tuple[bool, Dict[str, Any]]:
     """
     Evaluate all risk gates for a recommendation.
@@ -418,7 +513,15 @@ def evaluate_all_gates(
         # === TIER 1: KILL SWITCHES (Check First) ===
         'daily_loss_limit': check_daily_loss_limit(daily_pnl, config),
         'vix_regime': check_vix_regime(config),
-        'trading_hours': check_trading_hours(config),
+        'trading_hours': check_trading_hours_v2(recommendation, config),
+        
+        # === TIER 1.5: DUPLICATE POSITION CHECK (R8.4-8.5) ===
+        'duplicate_position': check_duplicate_position(
+            recommendation.get('ticker', 'UNKNOWN'),
+            (recommendation.get('instrument_type') or 'CALL').upper(),
+            account_name,
+            open_positions or [],
+        ),
         
         # === TIER 2: DATA QUALITY ===
         'bar_freshness': check_bar_freshness(bar, config),

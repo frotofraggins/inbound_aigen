@@ -11,15 +11,88 @@ import pytz
 
 from config import (
     ALPACA_API_KEY, ALPACA_API_SECRET, ALPACA_BASE_URL,
-    DAY_TRADE_CLOSE_TIME, OPTIONS_EXPIRY_WARNING_HOURS
+    DAY_TRADE_CLOSE_TIME, OPTIONS_EXPIRY_WARNING_HOURS,
+    ACCOUNT_NAME,
 )
 import db
 from bar_fetcher import OptionBarFetcher
+from eod_config import EODConfig
+from eod_engine import (
+    EODExitEngine, get_current_window, get_vix_regime, compute_theta_score,
+)
+from eod_models import OvernightCriteria, VIXRegime
+from close_loop import CloseLoopMonitor
+from earnings_client import EarningsCalendarClient
 
 logger = logging.getLogger(__name__)
 
 # Phase 17: Global bar fetcher (initialized in main)
 bar_fetcher = None
+
+# EOD engine components (initialized per monitoring cycle)
+_eod_engine: Optional[EODExitEngine] = None
+_close_loop_monitor: Optional[CloseLoopMonitor] = None
+
+
+def is_market_open() -> bool:
+    """Check if US stock market is currently open (9:30 AM - 4:00 PM ET)."""
+    et = get_eastern_time()
+    from datetime import time
+    market_open = time(9, 30)
+    market_close = time(16, 0)
+    # Weekday check (0=Mon, 6=Sun)
+    if et.weekday() >= 5:
+        return False
+    return market_open <= et.time() <= market_close
+
+
+def _init_eod_engine(db_conn=None) -> Optional[EODExitEngine]:
+    """
+    Initialize EOD engine for this monitoring cycle.
+    Loads fresh config, VIX regime, and earnings cache.
+    """
+    try:
+        account_tier = 'tiny' if ACCOUNT_NAME == 'tiny' else 'large'
+        config = EODConfig.for_account_tier(account_tier)
+
+        # Try to load VIX regime from DB
+        vix_regime = None
+        if db_conn:
+            try:
+                vix_regime = get_vix_regime(db_conn)
+            except Exception as e:
+                logger.warning(f"Could not load VIX regime: {e}")
+
+        # Initialize earnings client
+        earnings_client = None
+        try:
+            earnings_client = EarningsCalendarClient(ALPACA_API_KEY, ALPACA_API_SECRET)
+        except Exception as e:
+            logger.warning(f"Could not initialize earnings client: {e}")
+
+        engine = EODExitEngine(
+            config=config,
+            account_tier=account_tier,
+            earnings_client=earnings_client,
+            vix_regime=vix_regime,
+        )
+        return engine
+    except Exception as e:
+        logger.error(f"Failed to initialize EOD engine: {e}")
+        return None
+
+
+def _log_eod_decision(decision) -> None:
+    """Log an EOD decision event to position_events."""
+    try:
+        event_type = 'eod_decision'
+        payload = decision.to_event_payload()
+        db.log_position_event(decision.position_id, event_type, payload)
+
+        if decision.decision == 'hold' and decision.strategy_type == 'swing_trade':
+            db.log_position_event(decision.position_id, 'overnight_hold', payload)
+    except Exception as e:
+        logger.error(f"Failed to log EOD decision for position {decision.position_id}: {e}")
 
 # Initialize Alpaca client
 alpaca_client = TradingClient(
@@ -35,41 +108,63 @@ def get_eastern_time() -> datetime:
     return datetime.now(eastern)
 
 
+def _get_option_quote(option_symbol: str) -> Optional[float]:
+    """
+    Get live option mid-price from Alpaca Market Data API.
+    Uses /v1beta1/options/quotes/latest (NOT the positions API which returns stale data).
+    """
+    import requests as req
+    url = f"https://data.alpaca.markets/v1beta1/options/quotes/latest"
+    headers = {
+        'APCA-API-KEY-ID': ALPACA_API_KEY,
+        'APCA-API-SECRET-KEY': ALPACA_API_SECRET
+    }
+    resp = req.get(url, headers=headers, params={'symbols': option_symbol}, timeout=10)
+    resp.raise_for_status()
+    data = resp.json()
+    quote = data.get('quotes', {}).get(option_symbol)
+    if not quote:
+        return None
+    bid = float(quote.get('bp', 0))
+    ask = float(quote.get('ap', 0))
+    if bid > 0 and ask > 0:
+        return (bid + ask) / 2
+    # If no bid/ask, try last trade via bars
+    return None
+
+
 def get_current_price(position: Dict[str, Any]) -> Optional[float]:
     """
-    Get current market price for a position
+    Get current market price for a position.
+    Stocks: SDK quote API (bid/ask mid).
+    Options: Alpaca Market Data latest quote API (bid/ask mid).
     """
     try:
         if position['instrument_type'] == 'STOCK':
-            # Get latest stock quote
             request = StockLatestQuoteRequest(symbol_or_symbols=position['ticker'])
             latest_quote = alpaca_client.get_stock_latest_quote(request)
-            
             if position['ticker'] in latest_quote:
                 quote = latest_quote[position['ticker']]
-                # Use mid-price between bid and ask
                 return (quote.bid_price + quote.ask_price) / 2
-            
         else:  # OPTIONS (CALL or PUT)
-            # For options, we need to query the options API
-            # This is more complex - use Alpaca's options data API
-            try:
-                # CRITICAL FIX 2026-02-05: Use option_symbol, not ticker
-                # Options must be queried by full symbol (e.g., MSFT260220P00400000)
-                # not by underlying ticker (e.g., MSFT)
-                option_symbol = position.get('option_symbol') or position['ticker']
-                alpaca_position = alpaca_client.get_open_position(option_symbol)
-                if alpaca_position:
-                    return float(alpaca_position.current_price)
-            except Exception as e:
-                logger.warning(f"Could not get option price from Alpaca position: {e}")
-                # Fallback: use last known price or entry price
-                return position.get('current_price', position['entry_price'])
-        
+            option_symbol = position.get('option_symbol') or position['ticker']
+            price = _get_option_quote(option_symbol)
+            if price is not None:
+                last_price = position.get('current_price')
+                logger.info(f"Position {position['id']} ({option_symbol}): ${last_price} → ${price:.2f}")
+                return price
+            # Fallback: latest bar close from bar_fetcher
+            if bar_fetcher:
+                bars = bar_fetcher.fetch_bars_for_symbol(option_symbol, minutes_back=5)
+                if bars:
+                    price = bars[-1]['close']
+                    logger.info(f"Position {position['id']} ({option_symbol}): bar fallback ${price:.2f}")
+                    return price
+            logger.error(f"No option price available for {option_symbol}")
+            return None
         return None
-        
     except Exception as e:
-        logger.error(f"Error fetching price for {position['ticker']}: {e}")
+        logger.error(f"Error fetching price for {position.get('ticker')}: {e}")
         return None
 
 
@@ -179,6 +274,12 @@ def check_exit_conditions(position: Dict[str, Any]) -> List[Dict[str, Any]]:
     Check all exit conditions for a position
     Returns list of triggered exits sorted by priority
     """
+    # Don't trigger exits when market is closed — orders won't fill
+    # and we'll just create stuck 'closing' records
+    if not is_market_open():
+        logger.debug(f"Market closed, skipping exit checks for position {position['id']}")
+        return []
+    
     exits_to_trigger = []
     
     # NEW: Check trailing stops (Phase 3)
@@ -332,17 +433,35 @@ def check_time_based_exits(position: Dict[str, Any]) -> List[Dict[str, Any]]:
     exits = []
     
     try:
-        # CRITICAL FIX 2026-02-06: Close ALL options before market close
-        # Overnight holds caused -52% loss on AMD, 100% failure rate overnight
-        # Data shows: Intraday 40% win rate, Overnight 0% win rate
+        # EOD Exit Engine: Strategy-aware, P&L-aware graduated close windows
+        # Replaces the blanket market_close_protection rule
         if position['instrument_type'] in ('CALL', 'PUT'):
             now_et = get_eastern_time()
-            if now_et.time() >= DAY_TRADE_CLOSE_TIME:  # 3:55 PM ET
-                exits.append({
-                    'reason': 'market_close_protection',
-                    'priority': 1,  # HIGH PRIORITY - close before market close!
-                    'message': 'Closing option before market close (avoid overnight gap risk and theta decay)'
-                })
+            config = EODConfig.for_account_tier('tiny' if ACCOUNT_NAME == 'tiny' else 'large')
+            current_window = get_current_window(now_et.time(), config)
+
+            if current_window is not None and _eod_engine is not None:
+                decision = _eod_engine.evaluate_position(position, current_window)
+                _log_eod_decision(decision)
+
+                if decision.decision == 'close':
+                    exits.append({
+                        'reason': decision.close_reason or 'EOD_EXIT',
+                        'priority': 1,
+                        'message': f'EOD exit: {decision.close_reason} '
+                                   f'(window {decision.window_index}, '
+                                   f'P&L {decision.pnl_pct:.1f}%)',
+                        'exit_reason_norm': 'EOD_EXIT',
+                    })
+            elif current_window is not None:
+                # Fallback: engine not initialized, use legacy close at final window
+                total_windows = len(config.graduated_close_windows)
+                if current_window >= total_windows - 1:
+                    exits.append({
+                        'reason': 'market_close_protection',
+                        'priority': 1,
+                        'message': 'Closing option before market close (EOD engine unavailable, fallback)',
+                    })
         
         # Check 1: Day trade time limit (must close by 3:55 PM ET)
         if position['strategy_type'] == 'day_trade':
@@ -514,7 +633,10 @@ def check_exit_conditions_options(position: Dict[str, Any]) -> List[Dict[str, An
                 'message': f'Option {option_pnl_pct:.1f}% loss (stop -60%)'
             })
         
-        # Exit 3: Time decay risk (theta burn) - only if unprofitable near expiry
+        # Exit 3: Time decay risk (theta burn) - only for very near expiry with losses
+        # UPDATED 2026-02-13: Relaxed from 7 DTE to 2 DTE. The old 7-day threshold
+        # was closing almost every weekly option immediately, locking in small losses.
+        # Now only triggers when expiry is imminent (<=2 days) and position is losing.
         if position['expiration_date']:
             exp_date = position['expiration_date']
             if isinstance(exp_date, str):
@@ -523,13 +645,20 @@ def check_exit_conditions_options(position: Dict[str, Any]) -> List[Dict[str, An
             
             days_to_expiry = (exp_date - datetime.now().date()).days
             
-            # If < 7 days to expiry and not profitable enough, exit to avoid theta decay
-            # Increased threshold from 20% to 30% to be more conservative
-            if days_to_expiry <= 7 and option_pnl_pct < 30:
+            # Only force-close for theta if:
+            # - 2 days or less to expiry AND not profitable (< 0%)
+            # - OR 1 day to expiry AND less than +10% profit
+            if days_to_expiry <= 1 and option_pnl_pct < 10:
                 exits.append({
                     'reason': 'theta_decay_risk',
                     'priority': 2,
-                    'message': f'{days_to_expiry} days to expiry, only +{option_pnl_pct:.1f}% profit'
+                    'message': f'{days_to_expiry} days to expiry, P&L {option_pnl_pct:.1f}% (close imminent)'
+                })
+            elif days_to_expiry <= 2 and option_pnl_pct < 0:
+                exits.append({
+                    'reason': 'theta_decay_risk',
+                    'priority': 2,
+                    'message': f'{days_to_expiry} days to expiry, losing {option_pnl_pct:.1f}%'
                 })
         
         return exits
@@ -590,36 +719,88 @@ def sync_from_alpaca_positions() -> int:
     """
     Sync positions directly from Alpaca API (NEW - Phase 3)
     This catches ALL positions including manual trades and logging gaps
-    
+
+    ALSO closes phantom positions (in DB but not in Alpaca)
+
     Returns: Number of positions synced
     """
     try:
         logger.info("Syncing positions from Alpaca API...")
-        
+
         # Get all open positions from Alpaca
         alpaca_positions = list(alpaca_client.get_all_positions())
-        
+
+        # Get current account name
+        from config import ACCOUNT_NAME
+
+        # Build set of symbols in Alpaca
+        alpaca_symbols = {pos.symbol for pos in alpaca_positions}
+
         if not alpaca_positions:
             logger.info("No positions found in Alpaca")
-            return 0
-        
-        logger.info(f"Found {len(alpaca_positions)} position(s) in Alpaca")
-        
+        else:
+            logger.info(f"Found {len(alpaca_positions)} position(s) in Alpaca")
+
+        # Check for phantom positions (in DB but not in Alpaca)
+        db_positions = db.get_open_positions(account_name=ACCOUNT_NAME)
+        phantoms_closed = 0
+
+        for db_pos in db_positions:
+            # Get the symbol to compare (option_symbol for options, ticker for stocks)
+            db_symbol = db_pos.get('option_symbol') or db_pos['ticker']
+
+            if db_symbol not in alpaca_symbols:
+                # Phantom position - exists in DB but not in Alpaca
+                logger.warning(
+                    f"⚠ Phantom position detected: {db_symbol} (ID {db_pos['id']}) "
+                    f"exists in DB but not in Alpaca - closing"
+                )
+
+                # Close the phantom position
+                try:
+                    db.close_position(
+                        db_pos['id'],
+                        close_reason='phantom_reconciliation',
+                        exit_price=db_pos.get('current_price', db_pos['entry_price'])
+                    )
+
+                    db.log_position_event(
+                        db_pos['id'],
+                        'phantom_closed',
+                        {
+                            'reason': 'Position exists in DB but not in Alpaca',
+                            'symbol': db_symbol,
+                            'account_name': ACCOUNT_NAME
+                        }
+                    )
+
+                    phantoms_closed += 1
+                    logger.info(f"✓ Closed phantom position {db_symbol} (ID {db_pos['id']})")
+
+                except Exception as e:
+                    logger.error(f"Failed to close phantom position {db_symbol}: {e}")
+
+        if phantoms_closed > 0:
+            logger.warning(f"⚠ Closed {phantoms_closed} phantom position(s)")
+
+        # Now sync positions FROM Alpaca TO database
         synced_count = 0
         for alpaca_pos in alpaca_positions:
             try:
                 symbol = alpaca_pos.symbol
-                
-                # Check if already tracked
-                existing = db.get_position_by_symbol(symbol)
-                
+
+                # Check if already tracked FOR THIS ACCOUNT
+                # CRITICAL: Must filter by account_name to avoid cross-account collisions
+                # Without this, tiny PM sees large account's AMZN and skips syncing tiny's AMZN
+                existing = db.get_position_by_symbol(symbol, account_name=ACCOUNT_NAME)
+
                 if existing:
                     logger.debug(f"Position {symbol} already tracked (ID {existing['id']})")
                     continue
-                
+
                 # Determine if stock or option
                 is_option = len(symbol) > 10  # Options have long symbols like META260209C00722500
-                
+
                 if is_option:
                     # Parse option symbol (e.g., META260209C00722500)
                     # Format: TICKER + YYMMDD + C/P + 00000000 (strike * 1000)
@@ -627,7 +808,7 @@ def sync_from_alpaca_positions() -> int:
                     opt_type = symbol[-9]
                     exp_str = symbol[-15:-9]
                     ticker = symbol[:-15].strip()
-                    
+
                     strike_price = int(strike_str) / 1000.0
                     exp_date = f"20{exp_str[0:2]}-{exp_str[2:4]}-{exp_str[4:6]}"
                     instrument_type = 'CALL' if opt_type == 'C' else 'PUT'
@@ -636,12 +817,12 @@ def sync_from_alpaca_positions() -> int:
                     strike_price = None
                     exp_date = None
                     instrument_type = 'STOCK'
-                
+
                 # Get position details from Alpaca
                 qty = float(alpaca_pos.qty)
                 entry_price = float(alpaca_pos.avg_entry_price)
                 current_price = float(alpaca_pos.current_price)
-                
+
                 # Calculate stops
                 # UPDATED 2026-02-07: Widened to -60% based on backtest analysis
                 # Backtest showed: 5 trades stopped at -40% then recovered to positive
@@ -651,10 +832,8 @@ def sync_from_alpaca_positions() -> int:
                 else:
                     stop_loss = entry_price * 0.98  # -2% for stock
                     take_profit = entry_price * 1.03  # +3% for stock
-                
+
                 # Create active_position with correct account name
-                from config import ACCOUNT_NAME
-                
                 position_id = db.create_position_from_alpaca(
                     ticker=ticker,
                     instrument_type=instrument_type,
@@ -669,14 +848,14 @@ def sync_from_alpaca_positions() -> int:
                     option_symbol=symbol if is_option else None,
                     account_name=ACCOUNT_NAME  # Pass correct account name
                 )
-                
+
                 logger.info(
                     f"✓ Synced from Alpaca: {symbol} "
                     f"({instrument_type} @ ${entry_price:.2f}, qty {qty}) "
                     f"- position ID {position_id}"
                 )
                 synced_count += 1
-                
+
                 # Log creation event
                 db.log_position_event(
                     position_id,
@@ -689,21 +868,22 @@ def sync_from_alpaca_positions() -> int:
                         'current_price': current_price
                     }
                 )
-                
+
             except Exception as e:
                 logger.error(f"Error syncing position {alpaca_pos.symbol}: {e}", exc_info=True)
                 continue
-        
+
         if synced_count > 0:
             logger.info(f"✓ Synced {synced_count} position(s) from Alpaca API")
-        else:
-            logger.info("All Alpaca positions already tracked")
-        
+        elif not phantoms_closed:
+            logger.info("All positions in sync")
+
         return synced_count
-        
+
     except Exception as e:
         logger.error(f"Error syncing from Alpaca API: {e}", exc_info=True)
         return 0
+
 
 
 def sync_new_positions(since_time: datetime, account_name: str = 'large') -> int:
@@ -754,3 +934,56 @@ def sync_new_positions(since_time: datetime, account_name: str = 'large') -> int
     except Exception as e:
         logger.error(f"Error syncing new positions: {e}")
         return 0
+
+
+def log_overnight_outcomes(positions: List[Dict[str, Any]]) -> int:
+    """
+    R6.4: On first monitoring cycle of each trading day, log overnight outcomes.
+    Compares previous EOD price to current open price for positions held overnight.
+    Returns number of outcomes logged.
+    """
+    count = 0
+    for pos in positions:
+        try:
+            # Only positions that were held overnight (have overnight_hold event)
+            # and haven't had an outcome logged yet today
+            pos_id = pos.get('id', 0)
+            entry_price = float(pos.get('entry_price', 0) or 0)
+            current_price = float(pos.get('current_price', 0) or 0)
+
+            if entry_price <= 0 or current_price <= 0:
+                continue
+
+            # Check if this position has an overnight_hold event (was held overnight)
+            # We approximate by checking if the position was created before today
+            created_at = pos.get('created_at')
+            if created_at is None:
+                continue
+
+            if isinstance(created_at, str):
+                try:
+                    created_at = datetime.fromisoformat(created_at)
+                except ValueError:
+                    continue
+
+            now_utc = datetime.now(timezone.utc)
+            if created_at.date() >= now_utc.date():
+                continue  # Created today, not an overnight hold
+
+            # Calculate overnight P&L (approximate: entry → current open)
+            overnight_pnl_pct = ((current_price - entry_price) / entry_price) * 100
+            overnight_pnl_dollars = (current_price - entry_price) * float(pos.get('quantity', 1) or 1)
+
+            db.log_position_event(pos_id, 'overnight_outcome', {
+                'position_id': pos_id,
+                'close_price_eod': entry_price,  # approximate
+                'open_price_next_day': current_price,
+                'overnight_pnl_pct': round(overnight_pnl_pct, 2),
+                'overnight_pnl_dollars': round(overnight_pnl_dollars, 2),
+            })
+            count += 1
+
+        except Exception as e:
+            logger.error(f"Failed to log overnight outcome for position {pos.get('id')}: {e}")
+
+    return count

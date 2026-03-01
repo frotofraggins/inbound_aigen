@@ -1,4 +1,6 @@
-alpaca-py==0.21.0
-boto3==1.34.0
+alpaca-py==0.21.0  # Original working version from Feb 6
+websockets==10.4  # Old version that supports extra_headers
+boto3==1.35.79
 psycopg2-binary==2.9.9
 pytz==2024.1
+requests==2.32.5

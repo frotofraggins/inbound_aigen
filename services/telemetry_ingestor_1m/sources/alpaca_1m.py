@@ -53,13 +53,15 @@ def fetch_alpaca_bars(
     }
     
     # Query parameters
+    # CRITICAL FIX 2026-02-16: Remove feed parameter - IEX returns null for all tickers
+    # Paper trading Basic plan gets default feed which actually has data
     params = {
         'timeframe': interval,
         'start': start_str,
         'end': end_str,
         'limit': 10000,  # Max bars to return
-        'adjustment': 'raw',  # Raw prices (no splits/dividends)
-        'feed': 'iex'  # Use IEX feed (free tier) instead of SIP
+        'adjustment': 'raw'  # Raw prices (no splits/dividends)
+        # NO feed parameter - use default (works with paper trading)
     }
     
     for attempt in range(max_retries):
@@ -85,8 +87,25 @@ def fetch_alpaca_bars(
             
             data = response.json()
             
+            # CRITICAL: Check if data is None or not a dict
+            if data is None:
+                print(f"Alpaca returned None for {ticker}")
+                if attempt < max_retries - 1:
+                    sleep_time = (2 ** attempt) + random.uniform(0, 1)
+                    time.sleep(sleep_time)
+                    continue
+                return None
+            
             # Check if we got bars
-            if 'bars' not in data or len(data['bars']) == 0:
+            if 'bars' not in data:
+                print(f"Alpaca response for {ticker} missing 'bars' key: {data}")
+                if attempt < max_retries - 1:
+                    sleep_time = (2 ** attempt) + random.uniform(0, 1)
+                    time.sleep(sleep_time)
+                    continue
+                return None
+            
+            if data['bars'] is None or len(data['bars']) == 0:
                 if attempt < max_retries - 1:
                     sleep_time = (2 ** attempt) + random.uniform(0, 1)
                     time.sleep(sleep_time)

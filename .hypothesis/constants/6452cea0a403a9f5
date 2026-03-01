@@ -1,0 +1,4 @@
+# file: /workplace/nflos/inbound_aigen/services/position_manager/close_loop.py
+# hypothesis_version: 6.151.6
+
+['America/New_York', 'US/Eastern', 'account_name', 'close_duplicate', 'close_retry_count', 'closing', 'closing_started_at', 'created_at', 'id', 'instrument_type', 'manual_review', 'open', 'queue_for_open', 'retry', 'status', 'ticker', 'updated_at']

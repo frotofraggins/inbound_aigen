@@ -1,0 +1,4 @@
+# file: /workplace/nflos/inbound_aigen/services/position_manager/eod_engine.py
+# hypothesis_version: 6.151.6
+
+[0.0, 0.5, 1.0, 25.0, 30.0, 50.0, 60.0, 100.0, 'complacent', 'current_pnl_percent', 'current_price', 'dte', 'elevated', 'entry_price', 'extreme', 'high', 'normal', 'theta', 'theta_penalty', 'vix_elevated', 'vix_high']
